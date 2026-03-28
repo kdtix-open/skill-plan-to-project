@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.venv/
+venv/
+.env
+
+# Testing & coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Temp files
+/tmp/
+*.tmp
+
+# Manifest outputs (runtime artifacts, not source)
+manifest.json
+manifest-config.json
+compliance-report.json
+queue-order.json
