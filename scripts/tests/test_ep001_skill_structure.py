@@ -72,11 +72,11 @@ class TestSkillMd:
 
     def test_references_all_scripts(self, skill_md: str) -> None:
         for script in [
-            "create-issues.py",
-            "set-relationships.py",
-            "set-project-fields.py",
-            "compliance-check.py",
-            "queue-order.py",
+            "create_issues.py",
+            "set_relationships.py",
+            "set_project_fields.py",
+            "compliance_check.py",
+            "queue_order.py",
         ]:
             assert script in skill_md, f"SKILL.md must reference {script}"
 

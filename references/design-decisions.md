@@ -67,7 +67,7 @@ would lose that context. Appending is always safe; a human can clean up later.
 
 ## Rate Limiting: 0.5s Sleep Between Creates
 
-**Decision:** `create-issues.py` sleeps 0.5s between `gh issue create` calls.
+**Decision:** `create_issues.py` sleeps 0.5s between `gh issue create` calls.
 
 **Why:** GitHub's secondary rate limit triggers on bursts of identical operations.
 0.5s is sufficient to avoid the limit for backlogs up to 50 issues without adding
