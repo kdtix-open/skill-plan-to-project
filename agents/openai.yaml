@@ -1,0 +1,12 @@
+interface:
+  display_name: "Plan to Project"
+  short_description: "Convert a markdown plan into a GitHub Project backlog"
+  default_prompt: "Use $plan-to-project to convert my plan file into a structured GitHub Project backlog."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "github"
+      description: "GitHub MCP server for issue and project operations"
+      transport: "streamable_http"
+      url: "https://api.githubcopilot.com/mcp/"

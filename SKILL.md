@@ -1,0 +1,177 @@
+---
+name: plan-to-project
+description: >
+  Convert a markdown requirements plan into a fully structured GitHub Project backlog.
+  Use when you have a markdown plan file (with Scope, Initiative, Epic, Story, and Task
+  hierarchy) and want to create all GitHub issues with correct Issue Types, parent/child
+  sub-issue relationships, blocking labels, project V2 field values (Priority, Size,
+  Status), template-compliant issue bodies, and a priority queue order.
+  Triggers on requests like: "convert my plan to a GitHub project", "create issues from
+  my plan", "build a backlog from this markdown", or "run plan-to-project".
+---
+
+# plan-to-project
+
+Convert a markdown requirements plan into a fully structured, template-compliant
+GitHub Project backlog in a single workflow.
+
+## Prerequisites
+
+- `gh` CLI authenticated (`gh auth status`). If not: `gh auth login`
+- Python 3.9+ available
+- Target GitHub org has Issue Types configured: `Project Scope`, `Initiative`, `Epic`,
+  `User Story`, `Task`
+- Target GitHub Project V2 has fields: `Priority` (P0/P1/P2), `Size` (XS/S/M/L/XL),
+  `Status` (Backlog/In Progress/Done/Blocked)
+- Input plan follows KDTIX markdown structure (see [references/plan-format.md](references/plan-format.md))
+
+## Inputs
+
+| Input | Description | Example |
+|-------|-------------|---------|
+| `PLAN_FILE` | Path to markdown plan | `plan-project-plan.md` |
+| `ORG` | GitHub org login | `kdtix-open` |
+| `REPO` | Target repo (owner/name) | `kdtix-open/my-project` |
+| `PROJECT_NUMBER` | GitHub Project V2 number | `8` |
+
+## Workflow
+
+### Phase 1 — Pre-flight validation
+
+```bash
+python scripts/create-issues.py preflight \
+  --org ORG --repo REPO --project PROJECT_NUMBER
+```
+
+Validates Issue Type IDs and Project V2 field IDs. Exits with clear error if anything
+is missing. Writes `manifest-config.json` with field/type IDs for downstream scripts.
+
+### Phase 2 — Parse plan
+
+```bash
+python scripts/create-issues.py parse --plan PLAN_FILE
+```
+
+Reads the markdown plan and extracts the 5-level hierarchy (Scope → Initiative →
+Epics → Stories → Tasks) with title, description, priority, size, parent reference,
+and blocking relationships. Prints a summary for review.
+
+### Phase 3 — Create issues (top-down)
+
+```bash
+python scripts/create-issues.py create \
+  --plan PLAN_FILE --org ORG --repo REPO --project PROJECT_NUMBER
+```
+
+Creates all issues top-down (Scope first, Tasks last) with template-compliant bodies
+(including auto-injected TDD language and Security/Compliance sections where required).
+Writes `manifest.json` with `number`, `nodeId`, and `databaseId` for every issue.
+
+**Key behaviors:**
+- Bodies written to temp files, passed via `--body-file` (avoids shell escaping)
+- 0.5s sleep between creations (rate limit protection)
+- Manifest JSON is the handoff artifact for all downstream scripts
+
+### Phase 4 — Set sub-issue relationships
+
+```bash
+python scripts/set-relationships.py \
+  --manifest manifest.json --repo REPO
+```
+
+Links each child issue to its parent using the GitHub sub-issues REST API
+(`databaseId` integer, `-F` flag). Reads parent/child pairs from `manifest.json`.
+
+### Phase 5 — Apply blocking labels
+
+```bash
+python scripts/set-relationships.py \
+  --manifest manifest.json --repo REPO --labels-only
+```
+
+Applies `blocks` label to blocker issues and `blocked` label to blocked issues.
+Updates the dependency table in each blocked issue's body with correct issue numbers.
+
+> **Note:** Phases 4 and 5 are both run by `set-relationships.py`. Omit
+> `--labels-only` to run both in one pass.
+
+### Phase 6 — Set project V2 fields
+
+```bash
+python scripts/set-project-fields.py \
+  --manifest manifest.json --config manifest-config.json \
+  --org ORG --project PROJECT_NUMBER
+```
+
+Runs GraphQL mutations to set `Priority`, `Size`, and `Status` on every issue in the
+project. Reads option IDs from `manifest-config.json` produced in Phase 1.
+
+### Phase 7 — Assign Issue Types
+
+```bash
+python scripts/set-project-fields.py \
+  --manifest manifest.json --config manifest-config.json \
+  --org ORG --project PROJECT_NUMBER --issue-types-only
+```
+
+Assigns the correct Issue Type (Scope/Initiative/Epic/User Story/Task) to each issue
+using the type IDs from `manifest-config.json`.
+
+> **Note:** Phases 6 and 7 are both run by `set-project-fields.py`. Omit
+> `--issue-types-only` to run both in one pass.
+
+### Phase 8 — Compliance review & P0 auto-fix
+
+```bash
+python scripts/compliance-check.py \
+  --manifest manifest.json --repo REPO
+```
+
+Checks every issue body against the KDTIX template standard:
+- **P0 gaps** (auto-fixed): missing TDD language, missing Security/Compliance on
+  mutation issues, missing dependency table on blocked issues
+- **P1/P2 gaps** (reported): missing Assumptions, MoSCoW, Implementation Options,
+  Subtasks Needed column
+
+Writes `compliance-report.json` with gap summary per issue.
+
+### Phase 9 — Queue order output
+
+```bash
+python scripts/queue-order.py \
+  --manifest manifest.json --repo REPO --project PROJECT_NUMBER
+```
+
+Applies the priority algorithm to Story-level issues and outputs a recommended
+execution order. Eligible issues: `Status=Backlog`, no `blocked` label, parent
+`In Progress` or `Done`. Sort order: `P0>P1>P2`, `S<M<L`, lowest `#` tiebreaker.
+
+Prints ordered list to stdout and writes `queue-order.json`.
+
+## Design Decisions
+
+See [references/design-decisions.md](references/design-decisions.md) for the full
+rationale. Key choices:
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Language | Python 3 + `gh` CLI | Available everywhere; no extra auth setup |
+| Body injection | `--body-file` | Avoids shell escaping with special characters |
+| Sub-issue API key | `databaseId` (integer, `-F` flag) | nodeId rejected by sub-issues REST API |
+| Creation order | Top-down (Scope first) | Parents must exist before children can be linked |
+| Manifest format | JSON with number + nodeId + databaseId | All downstream scripts need different ID types |
+| TDD | Red before Green | No production code without a failing test first |
+
+## Templates and References
+
+- [assets/template-scope.md](assets/template-scope.md) — Project Scope issue body template
+- [assets/template-initiative.md](assets/template-initiative.md) — Initiative issue body template
+- [assets/template-epic.md](assets/template-epic.md) — Epic issue body template
+- [assets/template-story.md](assets/template-story.md) — User Story issue body template
+- [assets/template-task.md](assets/template-task.md) — Task issue body template
+- [references/plan-format.md](references/plan-format.md) — Expected markdown plan structure
+- [references/github-graphql.md](references/github-graphql.md) — GraphQL queries for Issue Types and project fields
+- [references/sub-issues-api.md](references/sub-issues-api.md) — Sub-issues REST API patterns
+- [references/gh-cli-patterns.md](references/gh-cli-patterns.md) — Reliable `gh` CLI invocation patterns
+- [references/compliance-rules.md](references/compliance-rules.md) — P0/P1/P2 gap definitions and auto-fix rules
+- [references/design-decisions.md](references/design-decisions.md) — Full design rationale
