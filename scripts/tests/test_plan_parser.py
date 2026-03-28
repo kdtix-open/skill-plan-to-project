@@ -77,6 +77,28 @@ DEFAULTS_PLAN = textwrap.dedent("""\
     ##### Task: Plain task
 """)
 
+DOCUMENTED_LEVEL_PLAN = textwrap.dedent("""\
+    # Project Scope: PS-001 Documented Levels
+    Priority: P0
+    Size: M
+
+    ## Initiative: INIT-001 Documented Initiative
+    Priority: P0
+    Size: L
+
+    ### Epic: EP-001 Parser Epic
+    Priority: P0
+    Size: M
+
+    ### Story: Parse documented headings
+    Priority: P1
+    Size: S
+
+    #### Task: Support documented task heading
+    Priority: P0
+    Size: XS
+""")
+
 
 @pytest.fixture
 def tmp_plan(tmp_path: Path) -> callable:
@@ -308,3 +330,11 @@ class TestParsePlanEdgeCases:
         """)
         result = create_issues.parse_plan(str(tmp_plan(plan)))
         assert len(result["stories"]) == 3
+
+    def test_documented_story_and_task_heading_levels_are_supported(self, tmp_plan):
+        result = create_issues.parse_plan(str(tmp_plan(DOCUMENTED_LEVEL_PLAN)))
+
+        assert len(result["stories"]) == 1
+        assert result["stories"][0]["title"] == "Parse documented headings"
+        assert len(result["tasks"]) == 1
+        assert result["tasks"][0]["title"] == "Support documented task heading"
