@@ -39,7 +39,7 @@ GitHub Project backlog in a single workflow.
 ### Phase 1 — Pre-flight validation
 
 ```bash
-python scripts/create-issues.py preflight \
+python scripts/create_issues.py preflight \
   --org ORG --repo REPO --project PROJECT_NUMBER
 ```
 
@@ -49,7 +49,7 @@ is missing. Writes `manifest-config.json` with field/type IDs for downstream scr
 ### Phase 2 — Parse plan
 
 ```bash
-python scripts/create-issues.py parse --plan PLAN_FILE
+python scripts/create_issues.py parse --plan PLAN_FILE
 ```
 
 Reads the markdown plan and extracts the 5-level hierarchy (Scope → Initiative →
@@ -59,7 +59,7 @@ and blocking relationships. Prints a summary for review.
 ### Phase 3 — Create issues (top-down)
 
 ```bash
-python scripts/create-issues.py create \
+python scripts/create_issues.py create \
   --plan PLAN_FILE --org ORG --repo REPO --project PROJECT_NUMBER
 ```
 
@@ -75,7 +75,7 @@ Writes `manifest.json` with `number`, `nodeId`, and `databaseId` for every issue
 ### Phase 4 — Set sub-issue relationships
 
 ```bash
-python scripts/set-relationships.py \
+python scripts/set_relationships.py \
   --manifest manifest.json --repo REPO
 ```
 
@@ -85,20 +85,20 @@ Links each child issue to its parent using the GitHub sub-issues REST API
 ### Phase 5 — Apply blocking labels
 
 ```bash
-python scripts/set-relationships.py \
+python scripts/set_relationships.py \
   --manifest manifest.json --repo REPO --labels-only
 ```
 
 Applies `blocks` label to blocker issues and `blocked` label to blocked issues.
 Updates the dependency table in each blocked issue's body with correct issue numbers.
 
-> **Note:** Phases 4 and 5 are both run by `set-relationships.py`. Omit
+> **Note:** Phases 4 and 5 are both run by `set_relationships.py`. Omit
 > `--labels-only` to run both in one pass.
 
 ### Phase 6 — Set project V2 fields
 
 ```bash
-python scripts/set-project-fields.py \
+python scripts/set_project_fields.py \
   --manifest manifest.json --config manifest-config.json \
   --org ORG --project PROJECT_NUMBER
 ```
@@ -109,7 +109,7 @@ project. Reads option IDs from `manifest-config.json` produced in Phase 1.
 ### Phase 7 — Assign Issue Types
 
 ```bash
-python scripts/set-project-fields.py \
+python scripts/set_project_fields.py \
   --manifest manifest.json --config manifest-config.json \
   --org ORG --project PROJECT_NUMBER --issue-types-only
 ```
@@ -117,13 +117,13 @@ python scripts/set-project-fields.py \
 Assigns the correct Issue Type (Scope/Initiative/Epic/User Story/Task) to each issue
 using the type IDs from `manifest-config.json`.
 
-> **Note:** Phases 6 and 7 are both run by `set-project-fields.py`. Omit
+> **Note:** Phases 6 and 7 are both run by `set_project_fields.py`. Omit
 > `--issue-types-only` to run both in one pass.
 
 ### Phase 8 — Compliance review & P0 auto-fix
 
 ```bash
-python scripts/compliance-check.py \
+python scripts/compliance_check.py \
   --manifest manifest.json --repo REPO
 ```
 
@@ -138,7 +138,7 @@ Writes `compliance-report.json` with gap summary per issue.
 ### Phase 9 — Queue order output
 
 ```bash
-python scripts/queue-order.py \
+python scripts/queue_order.py \
   --manifest manifest.json --repo REPO --project PROJECT_NUMBER
 ```
 
