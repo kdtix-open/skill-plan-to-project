@@ -9,8 +9,8 @@ The plan-to-project skill expects a markdown file structured with the KDTIX 5-le
 | Scope | `# Project Scope:` or `# PS-` | `# Project Scope: PS-001 My Project` |
 | Initiative | `## Initiative:` or `## INIT-` | `## Initiative: INIT-001 My Initiative` |
 | Epic | `### Epic:` or `### EP-` | `### Epic: EP-001 My Epic` |
-| Story | `### Story:` or `### User Story:` | `### Story: Author the widget` |
-| Task | `#### Task:` | `#### Task: Implement the parser` |
+| Story | `### Story:`, `### User Story:`, `#### Story:`, or `#### User Story:` | `### Story: Author the widget` |
+| Task | `#### Task:` or `##### Task:` | `#### Task: Implement the parser` |
 
 ## Required Frontmatter Per Item
 
@@ -45,6 +45,7 @@ Size: XS
 ## Parser Behavior
 
 - Headers are matched case-insensitively
+- Story and task headers accept both the compact documented depth and the deeper nested depth used by older examples
 - Items without an explicit Priority default to `P1`
 - Items without an explicit Size default to `M`
 - Blocking references are extracted from `Blocking:` lines or `Blocks: #N` patterns

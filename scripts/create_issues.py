@@ -37,8 +37,11 @@ LEVEL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("scope", re.compile(r"^#\s+(Project\s+Scope:|PS-)", re.IGNORECASE)),
     ("initiative", re.compile(r"^##\s+(Initiative:|INIT-)", re.IGNORECASE)),
     ("epic", re.compile(r"^###\s+(Epic:|EP-)", re.IGNORECASE)),
-    ("story", re.compile(r"^####\s+(Story:|User\s+Story:)", re.IGNORECASE)),
-    ("task", re.compile(r"^#####\s+Task:", re.IGNORECASE)),
+    (
+        "story",
+        re.compile(r"^#{3,4}\s+(Story:|User\s+Story:)", re.IGNORECASE),
+    ),
+    ("task", re.compile(r"^#{4,5}\s+Task:", re.IGNORECASE)),
 ]
 
 PRIORITY_RE = re.compile(r"^Priority:\s*(P[012])", re.IGNORECASE | re.MULTILINE)
