@@ -7,7 +7,7 @@ All gh CLI calls mocked.
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -17,111 +17,12 @@ from scripts import (
     set_project_fields,
     set_relationships,
 )
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-_TDD_DONE_WHEN = (
-    "## I Know I Am Done When\n"
-    "TDD followed: failing test written BEFORE implementation\n"
+from scripts.tests.conftest import (
+    SAMPLE_CONFIG,
+    SAMPLE_MANIFEST,
+    TDD_DONE_WHEN,
+    make_ok,
 )
-
-
-def _ok(stdout: str = "") -> MagicMock:
-    m = MagicMock()
-    m.returncode = 0
-    m.stdout = stdout
-    m.stderr = ""
-    return m
-
-
-SAMPLE_MANIFEST = {
-    "Test Project": {
-        "number": 1,
-        "nodeId": "I_node_1",
-        "databaseId": 10001,
-        "level": "scope",
-        "title": "Test Project",
-        "parent_ref": None,
-        "priority": "P0",
-        "size": "M",
-        "blocking": [],
-    },
-    "Core Initiative": {
-        "number": 2,
-        "nodeId": "I_node_2",
-        "databaseId": 10002,
-        "level": "initiative",
-        "title": "Core Initiative",
-        "parent_ref": "Test Project",
-        "priority": "P0",
-        "size": "L",
-        "blocking": [],
-    },
-    "First Epic": {
-        "number": 3,
-        "nodeId": "I_node_3",
-        "databaseId": 10003,
-        "level": "epic",
-        "title": "First Epic",
-        "parent_ref": "Core Initiative",
-        "priority": "P0",
-        "size": "M",
-        "blocking": [],
-    },
-    "Build the widget": {
-        "number": 4,
-        "nodeId": "I_node_4",
-        "databaseId": 10004,
-        "level": "story",
-        "title": "Build the widget",
-        "parent_ref": "First Epic",
-        "priority": "P1",
-        "size": "S",
-        "blocking": ["Implement tokenizer"],
-    },
-    "Implement tokenizer": {
-        "number": 5,
-        "nodeId": "I_node_5",
-        "databaseId": 10005,
-        "level": "task",
-        "title": "Implement tokenizer",
-        "parent_ref": "Build the widget",
-        "priority": "P0",
-        "size": "XS",
-        "blocking": [],
-    },
-}
-
-SAMPLE_CONFIG = {
-    "project_id": "PVT_test",
-    "org": "kdtix-open",
-    "repo": "kdtix-open/test",
-    "project_number": 8,
-    "issue_type_ids": {
-        "scope": "IT_scope",
-        "initiative": "IT_init",
-        "epic": "IT_epic",
-        "story": "IT_story",
-        "task": "IT_task",
-    },
-    "field_ids": {
-        "Priority": {
-            "id": "field_priority",
-            "options": {"P0": "opt_p0", "P1": "opt_p1", "P2": "opt_p2"},
-        },
-        "Size": {
-            "id": "field_size",
-            "options": {"XS": "opt_xs", "S": "opt_s", "M": "opt_m"},
-        },
-        "Status": {
-            "id": "field_status",
-            "options": {"Backlog": "opt_backlog", "Done": "opt_done"},
-        },
-    },
-}
-
 
 # ===========================================================================
 # set_relationships.py
@@ -129,17 +30,17 @@ SAMPLE_CONFIG = {
 
 
 class TestSetSubIssues:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_calls_sub_issue_api_for_each_child(self, mock_run):
-        mock_run.return_value = _ok("{}")
+        mock_run.return_value = make_ok("{}")
         set_relationships.set_sub_issues(SAMPLE_MANIFEST, "org/repo")
         # Expect POST calls for each parent-child pair (4 children)
         post_calls = [c for c in mock_run.call_args_list if "POST" in str(c)]
         assert len(post_calls) == 4
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_uses_database_id_not_node_id(self, mock_run):
-        mock_run.return_value = _ok("{}")
+        mock_run.return_value = make_ok("{}")
         set_relationships.set_sub_issues(SAMPLE_MANIFEST, "org/repo")
         for call in mock_run.call_args_list:
             args = call[0][0]
@@ -149,9 +50,9 @@ class TestSetSubIssues:
                 # Must use -F flag (typed integer) not -f
                 assert "-F" in args
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_uses_capital_f_flag_for_sub_issue_id(self, mock_run):
-        mock_run.return_value = _ok("{}")
+        mock_run.return_value = make_ok("{}")
         set_relationships.set_sub_issues(SAMPLE_MANIFEST, "org/repo")
         for call in mock_run.call_args_list:
             args = list(call[0][0])
@@ -165,9 +66,9 @@ class TestSetSubIssues:
 
 
 class TestSetBlockingLabels:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_adds_blocks_label_to_blocker(self, mock_run):
-        mock_run.return_value = _ok(
+        mock_run.return_value = make_ok(
             json.dumps({"body": "some body with Dependencies section"})
         )
         set_relationships.set_blocking_labels(SAMPLE_MANIFEST, "org/repo")
@@ -178,10 +79,10 @@ class TestSetBlockingLabels:
         ]
         assert len(label_calls) >= 1
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_adds_blocked_label_to_blocked_issue(self, mock_run):
         # First call returns empty body, subsequent return body/labels
-        mock_run.return_value = _ok("[]")
+        mock_run.return_value = make_ok("[]")
         set_relationships.set_blocking_labels(SAMPLE_MANIFEST, "org/repo")
         blocked_calls = [
             c
@@ -197,9 +98,9 @@ class TestSetBlockingLabels:
 
 
 class TestSetProjectFields:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_calls_graphql_for_each_issue(self, mock_run):
-        mock_run.return_value = _ok(
+        mock_run.return_value = make_ok(
             json.dumps(
                 {"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_test"}}}}
             )
@@ -209,9 +110,9 @@ class TestSetProjectFields:
         # At least one graphql call per issue
         assert len(graphql_calls) >= len(SAMPLE_MANIFEST)
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_sets_priority_field(self, mock_run):
-        mock_run.return_value = _ok(
+        mock_run.return_value = make_ok(
             json.dumps(
                 {
                     "data": {
@@ -230,9 +131,9 @@ class TestSetProjectFields:
         all_calls = " ".join(str(c) for c in mock_run.call_args_list)
         assert "updateProjectV2ItemFieldValue" in all_calls
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_sets_issue_types(self, mock_run):
-        mock_run.return_value = _ok(
+        mock_run.return_value = make_ok(
             json.dumps(
                 {
                     "data": {
@@ -249,9 +150,9 @@ class TestSetProjectFields:
         assert "updateIssue" in all_calls
 
     @patch("time.sleep")
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_sleeps_between_mutations(self, mock_run, mock_sleep):
-        mock_run.return_value = _ok(
+        mock_run.return_value = make_ok(
             json.dumps({"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_x"}}}})
         )
         set_project_fields.set_project_fields(SAMPLE_MANIFEST, SAMPLE_CONFIG)
@@ -281,7 +182,7 @@ class TestCheckIssue:
         assert "P0-1" not in p0_rules
 
     def test_detects_missing_security_on_mutation_issue(self):
-        body = _TDD_DONE_WHEN
+        body = TDD_DONE_WHEN
         gaps = compliance_check.check_issue(
             1, "Build the create endpoint", body, "story"
         )
@@ -289,13 +190,13 @@ class TestCheckIssue:
         assert "P0-2" in p0_rules
 
     def test_no_security_gap_for_read_only_issue(self):
-        body = _TDD_DONE_WHEN
+        body = TDD_DONE_WHEN
         gaps = compliance_check.check_issue(1, "Read the docs", body, "story")
         p0_rules = [g["rule"] for g in gaps if g["severity"] == "P0"]
         assert "P0-2" not in p0_rules
 
     def test_detects_p0_3_missing_deps_on_blocked(self):
-        body = _TDD_DONE_WHEN
+        body = TDD_DONE_WHEN
         gaps = compliance_check.check_issue(
             1, "Some story", body, "story", has_blocked_label=True
         )
@@ -303,13 +204,13 @@ class TestCheckIssue:
         assert "P0-3" in p0_rules
 
     def test_detects_p1_missing_assumptions(self):
-        body = _TDD_DONE_WHEN
+        body = TDD_DONE_WHEN
         gaps = compliance_check.check_issue(1, "Build X", body, "story")
         p1_rules = [g["rule"] for g in gaps if g["severity"] == "P1"]
         assert "P1-1" in p1_rules
 
     def test_detects_p1_missing_moscow(self):
-        body = "## Assumptions\n- something\n" + _TDD_DONE_WHEN
+        body = "## Assumptions\n- something\n" + TDD_DONE_WHEN
         gaps = compliance_check.check_issue(1, "Build X", body, "story")
         p1_rules = [g["rule"] for g in gaps if g["severity"] == "P1"]
         assert "P1-2" in p1_rules
@@ -397,7 +298,7 @@ class TestComputeQueueOrder:
 
     def test_p0_before_p1_in_order(self):
         manifest = {
-            "Epic A": {
+            "epic-1": {
                 "number": 10,
                 "nodeId": "N10",
                 "databaseId": 1010,
@@ -408,7 +309,7 @@ class TestComputeQueueOrder:
                 "size": "M",
                 "blocking": [],
             },
-            "Story P0": {
+            "story-1": {
                 "number": 11,
                 "nodeId": "N11",
                 "databaseId": 1011,
@@ -419,7 +320,7 @@ class TestComputeQueueOrder:
                 "size": "M",
                 "blocking": [],
             },
-            "Story P1": {
+            "story-2": {
                 "number": 12,
                 "nodeId": "N12",
                 "databaseId": 1012,
@@ -444,7 +345,7 @@ class TestComputeQueueOrder:
 
     def test_smaller_size_before_larger_same_priority(self):
         manifest = {
-            "Epic": {
+            "epic-1": {
                 "number": 20,
                 "nodeId": "N20",
                 "databaseId": 2000,
@@ -455,7 +356,7 @@ class TestComputeQueueOrder:
                 "size": "M",
                 "blocking": [],
             },
-            "Story Small": {
+            "story-1": {
                 "number": 21,
                 "nodeId": "N21",
                 "databaseId": 2001,
@@ -466,7 +367,7 @@ class TestComputeQueueOrder:
                 "size": "S",
                 "blocking": [],
             },
-            "Story Large": {
+            "story-2": {
                 "number": 22,
                 "nodeId": "N22",
                 "databaseId": 2002,
@@ -491,7 +392,7 @@ class TestComputeQueueOrder:
 
     def test_lower_issue_number_tiebreaker(self):
         manifest = {
-            "Epic": {
+            "epic-1": {
                 "number": 30,
                 "nodeId": "N30",
                 "databaseId": 3000,
@@ -502,7 +403,7 @@ class TestComputeQueueOrder:
                 "size": "M",
                 "blocking": [],
             },
-            "Story A": {
+            "story-1": {
                 "number": 31,
                 "nodeId": "N31",
                 "databaseId": 3001,
@@ -513,7 +414,7 @@ class TestComputeQueueOrder:
                 "size": "M",
                 "blocking": [],
             },
-            "Story B": {
+            "story-2": {
                 "number": 35,
                 "nodeId": "N35",
                 "databaseId": 3002,
@@ -558,11 +459,10 @@ class TestComputeQueueOrder:
 
     def test_writes_queue_order_json(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        # Patch _get_project_status and _get_issue_labels so run_queue_order works
         with patch.object(
             queue_order,
             "compute_queue_order",
-            return_value=[SAMPLE_MANIFEST["Build the widget"]],
+            return_value=[SAMPLE_MANIFEST["story-1"]],
         ):
             queue_order.run_queue_order(SAMPLE_MANIFEST, "org/repo")
         assert (tmp_path / "queue-order.json").exists()
@@ -574,7 +474,7 @@ class TestComputeQueueOrder:
 
 
 class TestRunComplianceCheck:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_run_compliance_check_writes_report(self, mock_run, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         body_with_tdd = (
@@ -583,19 +483,18 @@ class TestRunComplianceCheck:
             "BEFORE implementation\n### Subtasks Needed\n| 1 | t | 1 | No |\n"
             "### Release Value\nv\n### Why This Matters\nw\n### TL;DR\nt\n"
         )
-        mock_run.return_value = _ok(json.dumps(body_with_tdd))
 
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
             if "--json" in joined and "labels" in joined:
-                return _ok("[]")
-            return _ok(json.dumps(body_with_tdd))
+                return make_ok("[]")
+            return make_ok(body_with_tdd)
 
         mock_run.side_effect = side_effect
         compliance_check.run_compliance_check(SAMPLE_MANIFEST, "org/repo")
         assert (tmp_path / "compliance-report.json").exists()
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_run_compliance_check_returns_report_dict(
         self, mock_run, tmp_path, monkeypatch
     ):
@@ -604,8 +503,8 @@ class TestRunComplianceCheck:
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
             if "labels" in joined:
-                return _ok("[]")
-            return _ok(
+                return make_ok("[]")
+            return make_ok(
                 '"clean body with TDD followed: failing test '
                 'written BEFORE implementation"'
             )
@@ -617,11 +516,11 @@ class TestRunComplianceCheck:
 
 
 class TestSetRelationshipsCLI:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_set_sub_issues_skips_missing_parent(self, mock_run):
-        mock_run.return_value = _ok("{}")
+        mock_run.return_value = make_ok("{}")
         manifest_no_parent = {
-            "Orphan": {
+            "story-1": {
                 "number": 99,
                 "nodeId": "N99",
                 "databaseId": 9999,
@@ -636,11 +535,11 @@ class TestSetRelationshipsCLI:
         # Should not crash, just warn
         set_relationships.set_sub_issues(manifest_no_parent, "org/repo")
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_set_blocking_labels_skips_unresolvable_ref(self, mock_run):
-        mock_run.return_value = _ok("[]")
+        mock_run.return_value = make_ok("[]")
         manifest_bad_ref = {
-            "Blocker": {
+            "story-1": {
                 "number": 10,
                 "nodeId": "N10",
                 "databaseId": 1000,
@@ -674,9 +573,9 @@ class TestPriorityKey:
 
 
 class TestSetProjectFieldsIssueTypesOnly:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_issue_types_only_skips_field_mutations(self, mock_run):
-        mock_run.return_value = _ok(
+        mock_run.return_value = make_ok(
             json.dumps(
                 {
                     "data": {
@@ -697,12 +596,11 @@ class TestSetProjectFieldsIssueTypesOnly:
 
 
 class TestQueueOrderWritesJson:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_run_queue_order_writes_file(self, mock_run, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        # Two eligible stories with known statuses/labels
         test_manifest = {
-            "Epic": {
+            "epic-1": {
                 "number": 50,
                 "nodeId": "N50",
                 "databaseId": 5000,
@@ -713,7 +611,7 @@ class TestQueueOrderWritesJson:
                 "size": "M",
                 "blocking": [],
             },
-            "Story One": {
+            "story-1": {
                 "number": 51,
                 "nodeId": "N51",
                 "databaseId": 5001,
@@ -729,16 +627,16 @@ class TestQueueOrderWritesJson:
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
             if "labels" in joined:
-                return _ok("[]")
+                return make_ok("[]")
             if "projectItems" in joined:
-                return _ok('"Backlog"')
-            return _ok('"In Progress"')
+                return make_ok('"Backlog"')
+            return make_ok('"In Progress"')
 
         mock_run.side_effect = side_effect
         with patch.object(
             queue_order,
             "compute_queue_order",
-            return_value=[test_manifest["Story One"]],
+            return_value=[test_manifest["story-1"]],
         ):
             queue_order.run_queue_order(test_manifest, "org/repo")
         assert (tmp_path / "queue-order.json").exists()
@@ -749,7 +647,7 @@ class TestQueueOrderWritesJson:
 class TestComplianceCheckHelpers:
     def test_check_issue_scope_no_security_gap(self):
         """Scope-level issues don't require Security/Compliance section."""
-        body = _TDD_DONE_WHEN
+        body = TDD_DONE_WHEN
         gaps = compliance_check.check_issue(1, "Build something", body, "scope")
         p0_rules = [g["rule"] for g in gaps if g["severity"] == "P0"]
         assert "P0-2" not in p0_rules  # scope exempt from security requirement
@@ -764,9 +662,9 @@ class TestComplianceCheckHelpers:
 
 # More CLI path tests to hit 80% threshold
 class TestSetRelationshipsCLIMain:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_main_with_manifest_file(self, mock_run, tmp_path):
-        mock_run.return_value = _ok("{}")
+        mock_run.return_value = make_ok("{}")
         manifest_file = tmp_path / "manifest.json"
         manifest_file.write_text(json.dumps(SAMPLE_MANIFEST), encoding="utf-8")
         with patch(
@@ -781,9 +679,9 @@ class TestSetRelationshipsCLIMain:
         ):
             set_relationships.main()
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_main_labels_only_flag(self, mock_run, tmp_path):
-        mock_run.return_value = _ok("[]")
+        mock_run.return_value = make_ok("[]")
         manifest_file = tmp_path / "manifest.json"
         manifest_file.write_text(json.dumps(SAMPLE_MANIFEST), encoding="utf-8")
         with patch(
@@ -801,9 +699,9 @@ class TestSetRelationshipsCLIMain:
 
 
 class TestSetProjectFieldsCLIMain:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_main_runs_without_error(self, mock_run, tmp_path):
-        mock_run.return_value = _ok(
+        mock_run.return_value = make_ok(
             json.dumps(
                 {
                     "data": {
@@ -837,3 +735,28 @@ class TestSetProjectFieldsCLIMain:
             ],
         ):
             set_project_fields.main()
+
+
+class TestFindByRef:
+    def test_exact_match_preferred(self):
+        by_title = {
+            "API": {"title": "API", "number": 1},
+            "API Gateway": {"title": "API Gateway", "number": 2},
+            "API v2": {"title": "API v2", "number": 3},
+        }
+        result = set_relationships._find_by_ref("API", by_title)
+        assert result["number"] == 1
+
+    def test_substring_match_when_no_exact(self):
+        by_title = {
+            "Widget API Gateway": {"title": "Widget API Gateway", "number": 1},
+        }
+        result = set_relationships._find_by_ref("API", by_title)
+        assert result["number"] == 1
+
+    def test_returns_none_when_no_match(self):
+        by_title = {
+            "Widget": {"title": "Widget", "number": 1},
+        }
+        result = set_relationships._find_by_ref("Nonexistent", by_title)
+        assert result is None

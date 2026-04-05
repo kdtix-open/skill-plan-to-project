@@ -24,6 +24,7 @@ addopts = "-v --cov=scripts --cov-report=term-missing --cov-fail-under=80"
 [tool.ruff]
 line-length = 88
 target-version = "py39"
+extend-exclude = [".github/skills"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "S"]

@@ -1,0 +1,48 @@
+name: Create Schrodinger Issue for skill plan
+
+on:
+  # Run manually from the Actions tab after this PR is merged.
+  # https://github.com/kdtix-open/modular-engineering-guides/actions
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  create-schrodinger-issue:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure schrodinger-issue label exists
+        run: |
+          gh label create "schrodinger-issue" \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "Retroactively created issue tracking work that happened before the issue existed" \
+            --color "8B5CF6" 2>/dev/null || true
+
+      - name: Create Schrodinger Issue (skip if already exists)
+        run: |
+          TITLE="feat: Add Schrödinger Issue skill — retroactively create GitHub issues from git changes"
+
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --state open --search "$TITLE" --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            echo "Issue already exists: #$EXISTING"
+            exit 0
+          fi
+
+          ISSUE_URL=$(gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --label "documentation" \
+            --label "schrodinger-issue" \
+            --body-file .github/schrodinger-issue-plan-body.md)
+          ISSUE_NUM="${ISSUE_URL##*/issues/}"
+          echo "Created issue #$ISSUE_NUM: $ISSUE_URL"

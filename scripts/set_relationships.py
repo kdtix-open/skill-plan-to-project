@@ -14,31 +14,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Subprocess helper
-# ---------------------------------------------------------------------------
-
-
-def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        cmd,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-    )
-    if check and result.returncode != 0:
-        print(f"[ERROR] Command failed: {' '.join(cmd)}", file=sys.stderr)
-        print(result.stderr.strip(), file=sys.stderr)
-        sys.exit(result.returncode)
-    return result
-
+from scripts.gh_helpers import (
+    GitHubAPIError,
+    get_issue_body,
+    run_gh,
+    update_issue_body,
+)
 
 # ---------------------------------------------------------------------------
 # Sub-issue relationships
@@ -47,7 +32,6 @@ def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]
 
 def set_sub_issues(manifest: dict[str, Any], repo: str) -> None:
     """Link each child issue to its parent using the sub-issues REST API."""
-    # Build a title → number lookup
     by_title: dict[str, dict[str, Any]] = {v["title"]: v for v in manifest.values()}
     by_parent_ref: dict[str, list[dict[str, Any]]] = {}
     for record in manifest.values():
@@ -67,7 +51,7 @@ def set_sub_issues(manifest: dict[str, Any], repo: str) -> None:
         parent_number = parent["number"]
         for child in children:
             child_db_id = child["databaseId"]
-            _run(
+            run_gh(
                 [
                     "gh",
                     "api",
@@ -100,7 +84,6 @@ def set_blocking_labels(manifest: dict[str, Any], repo: str) -> None:
     pairs: list[tuple[dict, dict]] = []
     for record in manifest.values():
         for blocking_ref in record.get("blocking", []):
-            # Find the blocked issue by partial title match
             blocked = _find_by_ref(blocking_ref, by_title)
             if blocked:
                 pairs.append((record, blocked))
@@ -122,15 +105,41 @@ def set_blocking_labels(manifest: dict[str, Any], repo: str) -> None:
 
 
 def _find_by_ref(ref: str, by_title: dict[str, Any]) -> dict[str, Any] | None:
-    ref_lower = ref.lower()
+    """Find a manifest record by reference string.
+
+    Uses exact match first, then falls back to substring matching.
+    Warns if multiple substring matches are found.
+    """
+    ref_lower = ref.lower().strip()
+
+    # 1. Exact match
     for title, record in by_title.items():
-        if ref_lower in title.lower() or title.lower() in ref_lower:
+        if title.lower() == ref_lower:
             return record
+
+    # 2. Substring match — collect all candidates
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for title, record in by_title.items():
+        if ref_lower in title.lower():
+            candidates.append((title, record))
+
+    if len(candidates) == 1:
+        return candidates[0][1]
+
+    if len(candidates) > 1:
+        titles = [c[0] for c in candidates]
+        print(
+            f"[WARN] Ambiguous blocking ref '{ref}' matched {len(candidates)} "
+            f"titles: {titles}. Using first match.",
+            file=sys.stderr,
+        )
+        return candidates[0][1]
+
     return None
 
 
 def _add_label(repo: str, number: int, label: str) -> None:
-    _run(
+    run_gh(
         [
             "gh",
             "issue",
@@ -145,30 +154,12 @@ def _add_label(repo: str, number: int, label: str) -> None:
     )
 
 
-def _get_body(repo: str, number: int) -> str:
-    result = _run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(number),
-            "--repo",
-            repo,
-            "--json",
-            "body",
-            "--jq",
-            ".body",
-        ]
-    )
-    return result.stdout.strip()
-
-
 def _patch_dependency_table(
     repo: str,
     blocked: dict[str, Any],
     blocker: dict[str, Any],
 ) -> None:
-    body = _get_body(repo, blocked["number"])
+    body = get_issue_body(repo, blocked["number"])
     dep_row = f"| #{blocker['number']} {blocker['title']} | Blocking | " f"Open |\n"
     dep_table = (
         "\n\n### Dependencies\n\n"
@@ -185,27 +176,7 @@ def _patch_dependency_table(
             dep_row,
         )
 
-    fd, tmp = tempfile.mkstemp(suffix=".md")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
-        _run(
-            [
-                "gh",
-                "issue",
-                "edit",
-                str(blocked["number"]),
-                "--repo",
-                repo,
-                "--body-file",
-                tmp,
-            ]
-        )
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+    update_issue_body(repo, blocked["number"], body)
 
 
 # ---------------------------------------------------------------------------
@@ -233,9 +204,13 @@ def main() -> None:
 
     manifest = json.loads(path.read_text(encoding="utf-8"))
 
-    if not args.labels_only:
-        set_sub_issues(manifest, args.repo)
-    set_blocking_labels(manifest, args.repo)
+    try:
+        if not args.labels_only:
+            set_sub_issues(manifest, args.repo)
+        set_blocking_labels(manifest, args.repo)
+    except GitHubAPIError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

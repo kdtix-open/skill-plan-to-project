@@ -22,153 +22,21 @@ Asserts:
 from __future__ import annotations
 
 import json
-import textwrap
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from scripts import (
     compliance_check,
     create_issues,
     queue_order,
 )
-
-# ---------------------------------------------------------------------------
-# Test fixtures
-# ---------------------------------------------------------------------------
-
-SAMPLE_PLAN = textwrap.dedent(
-    """\
-    # Project Scope: Build the Widget Platform
-
-    ## Initiative: Widget Core
-
-    ### Epic: Widget API
-    Priority: P0
-    Size: M
-
-    #### User Story: Create widget endpoint
-    Priority: P0
-    Size: S
-
-    #### User Story: Read widget list
-    Priority: P1
-    Size: M
-
-    ##### Task: Write OpenAPI spec
-    Priority: P0
-    Size: XS
-
-    ##### Task: Implement handler
-    Priority: P1
-    Size: S
-    """
+from scripts.tests.conftest import (
+    GOOD_BODY,
+    MOCK_ISSUE_TYPES_RESPONSE,
+    MOCK_PROJECT_FIELDS_RESPONSE,
+    SAMPLE_PLAN,
+    issue_url,
+    make_ok,
 )
-
-ISSUE_TYPES_JSON = json.dumps(
-    [
-        {"id": "IT_scope", "name": "Project Scope"},
-        {"id": "IT_init", "name": "Initiative"},
-        {"id": "IT_epic", "name": "Epic"},
-        {"id": "IT_story", "name": "User Story"},
-        {"id": "IT_task", "name": "Task"},
-    ]
-)
-
-FIELDS_JSON = json.dumps(
-    {
-        "data": {
-            "organization": {
-                "projectV2": {
-                    "id": "PVT_test",
-                    "fields": {
-                        "nodes": [
-                            {
-                                "name": "Status",
-                                "id": "F_STATUS",
-                                "options": [
-                                    {"id": "OPT_backlog", "name": "Backlog"},
-                                    {"id": "OPT_inprog", "name": "In progress"},
-                                    {"id": "OPT_done", "name": "Done"},
-                                ],
-                            },
-                            {
-                                "name": "Priority",
-                                "id": "F_PRIO",
-                                "options": [
-                                    {"id": "OPT_p0", "name": "P0"},
-                                    {"id": "OPT_p1", "name": "P1"},
-                                    {"id": "OPT_p2", "name": "P2"},
-                                ],
-                            },
-                            {
-                                "name": "Size",
-                                "id": "F_SIZE",
-                                "options": [
-                                    {"id": "OPT_xs", "name": "XS"},
-                                    {"id": "OPT_s", "name": "S"},
-                                    {"id": "OPT_m", "name": "M"},
-                                ],
-                            },
-                        ]
-                    },
-                }
-            }
-        }
-    }
-)
-
-# Minimal compliant body — passes all P0 checks
-_GOOD_BODY = textwrap.dedent(
-    """\
-    ## Assumptions
-    - None known.
-
-    ## MoSCoW Classification
-    | Must | This story is required |
-
-    ## I Know I Am Done When
-    TDD followed: failing test written BEFORE implementation
-
-    ### Subtasks Needed
-    | # | Task | Est | Done? |
-    |---|------|-----|-------|
-    | 1 | Impl | 1h  | No    |
-
-    ### Release Value
-    Enables widget creation.
-
-    ### Why This Matters
-    Core feature.
-
-    ### TL;DR
-    Build it.
-
-    ## Security and Compliance
-    - No PII handled.
-    """
-)
-
-
-def _make_ok(stdout: str = "") -> MagicMock:
-    m = MagicMock()
-    m.returncode = 0
-    m.stdout = stdout
-    m.stderr = ""
-    return m
-
-
-def _issue_url(number: int) -> str:
-    return f"https://github.com/kdtix-open/skill-plan-to-project/issues/{number}"
-
-
-def _issue_ids_json(number: int) -> str:
-    return json.dumps(
-        {
-            "nodeId": f"I_node_{number}",
-            "databaseId": number * 100,
-            "number": number,
-        }
-    )
-
 
 # ---------------------------------------------------------------------------
 # Phase 1 — parse_plan
@@ -239,18 +107,22 @@ class TestIntegrationParsePlan:
 
 
 class TestIntegrationPreflight:
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_preflight_returns_issue_types_and_fields(self, mock_run):
         def side_effect(cmd, **kw):
             joined = " ".join(str(c) for c in cmd)
+            if "auth" in joined:
+                return make_ok()
             if "issueTypes" in joined:
-                return _make_ok(
+                return make_ok(
                     json.dumps(
                         {
                             "data": {
                                 "organization": {
                                     "issueTypes": {
-                                        "nodes": json.loads(ISSUE_TYPES_JSON)
+                                        "nodes": json.loads(MOCK_ISSUE_TYPES_RESPONSE)[
+                                            "data"
+                                        ]["organization"]["issueTypes"]["nodes"]
                                     }
                                 }
                             }
@@ -258,33 +130,37 @@ class TestIntegrationPreflight:
                     )
                 )
             if "projectV2" in joined:
-                return _make_ok(FIELDS_JSON)
-            return _make_ok("{}")
+                return make_ok(MOCK_PROJECT_FIELDS_RESPONSE)
+            return make_ok("{}")
 
         mock_run.side_effect = side_effect
         cfg = create_issues.preflight("kdtix-open", "skill-plan-to-project", 8)
         assert "issue_type_ids" in cfg
         assert "field_ids" in cfg
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_preflight_maps_all_5_issue_types(self, mock_run):
         def side_effect(cmd, **kw):
             joined = " ".join(str(c) for c in cmd)
+            if "auth" in joined:
+                return make_ok()
             if "issueTypes" in joined:
-                return _make_ok(
+                return make_ok(
                     json.dumps(
                         {
                             "data": {
                                 "organization": {
                                     "issueTypes": {
-                                        "nodes": json.loads(ISSUE_TYPES_JSON)
+                                        "nodes": json.loads(MOCK_ISSUE_TYPES_RESPONSE)[
+                                            "data"
+                                        ]["organization"]["issueTypes"]["nodes"]
                                     }
                                 }
                             }
                         }
                     )
                 )
-            return _make_ok(FIELDS_JSON)
+            return make_ok(MOCK_PROJECT_FIELDS_RESPONSE)
 
         mock_run.side_effect = side_effect
         cfg = create_issues.preflight("kdtix-open", "skill-plan-to-project", 8)
@@ -312,7 +188,7 @@ class TestIntegrationCreateAllIssues:
         def create_side(repo, title, body):
             n = counter[0]
             counter[0] += 1
-            return _issue_url(n)
+            return issue_url(n)
 
         def ids_side(repo, number):
             return {
@@ -338,7 +214,7 @@ class TestIntegrationCreateAllIssues:
         def create_side(repo, title, body):
             n = counter[0]
             counter[0] += 1
-            return _issue_url(n)
+            return issue_url(n)
 
         def ids_side(repo, number):
             return {
@@ -354,8 +230,8 @@ class TestIntegrationCreateAllIssues:
         manifest = create_issues.create_all_issues(
             hierarchy, {}, "kdtix-open/skill-plan-to-project"
         )
-        for title, record in manifest.items():
-            assert "number" in record, f"Missing number for {title}"
+        for key, record in manifest.items():
+            assert "number" in record, f"Missing number for {key}"
             assert "nodeId" in record
             assert "databaseId" in record
             assert "level" in record
@@ -370,7 +246,7 @@ class TestIntegrationCreateAllIssues:
             call_titles.append(title)
             n = counter[0]
             counter[0] += 1
-            return _issue_url(n)
+            return issue_url(n)
 
         def ids_side(repo, number):
             return {
@@ -390,9 +266,7 @@ class TestIntegrationCreateAllIssues:
         scope_idx = next(
             (i for i, t in enumerate(call_titles) if "Widget Platform" in t), None
         )
-        story_idxs = [
-            i for i, t in enumerate(call_titles) if "S-001" in t or "S-002" in t
-        ]
+        story_idxs = [i for i, t in enumerate(call_titles) if "Story:" in t]
         assert scope_idx is not None
         assert all(
             scope_idx < idx for idx in story_idxs
@@ -409,7 +283,7 @@ class TestIntegrationCreateAllIssues:
         def create_side(repo, title, body):
             n = counter[0]
             counter[0] += 1
-            return _issue_url(n)
+            return issue_url(n)
 
         def ids_side(repo, number):
             return {
@@ -436,7 +310,7 @@ class TestIntegrationCreateAllIssues:
 class TestIntegrationCompliance:
     def test_no_p0_gaps_on_compliant_body(self):
         gaps = compliance_check.check_issue(
-            1, "Build the widget endpoint", _GOOD_BODY, "story"
+            1, "Build the widget endpoint", GOOD_BODY, "story"
         )
         p0_gaps = [g for g in gaps if g["severity"] == "P0"]
         assert p0_gaps == [], f"Expected no P0 gaps, got: {p0_gaps}"
@@ -447,13 +321,13 @@ class TestIntegrationCompliance:
         p0_rules = [g["rule"] for g in gaps if g["severity"] == "P0"]
         assert "P0-1" in p0_rules
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_run_compliance_zero_p0_for_clean_manifest(
         self, mock_run, tmp_path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         manifest = {
-            "Build the widget endpoint": {
+            "story-1": {
                 "number": 5,
                 "nodeId": "I_5",
                 "databaseId": 500,
@@ -469,8 +343,8 @@ class TestIntegrationCompliance:
         def side_effect(cmd, **kw):
             joined = " ".join(str(c) for c in cmd)
             if "labels" in joined:
-                return _make_ok("[]")
-            return _make_ok(_GOOD_BODY)
+                return make_ok("[]")
+            return make_ok(GOOD_BODY)
 
         mock_run.side_effect = side_effect
         report = compliance_check.run_compliance_check(manifest, "org/repo")
@@ -481,13 +355,13 @@ class TestIntegrationCompliance:
         ]
         assert len(p0_issues) == 0, f"Expected 0 P0 gap issues, got: {p0_issues}"
 
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_run_compliance_returns_correct_shape(
         self, mock_run, tmp_path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         manifest = {
-            "Story A": {
+            "story-1": {
                 "number": 1,
                 "nodeId": "I_1",
                 "databaseId": 100,
@@ -503,8 +377,8 @@ class TestIntegrationCompliance:
         def side_effect(cmd, **kw):
             joined = " ".join(str(c) for c in cmd)
             if "labels" in joined:
-                return _make_ok("[]")
-            return _make_ok(_GOOD_BODY)
+                return make_ok("[]")
+            return make_ok(GOOD_BODY)
 
         mock_run.side_effect = side_effect
         report = compliance_check.run_compliance_check(manifest, "org/repo")
@@ -555,7 +429,7 @@ class TestIntegrationQueueOrder:
 
     def test_compute_queue_order_filters_non_stories(self):
         manifest = {
-            "Epic One": {
+            "epic-1": {
                 "number": 1,
                 "level": "epic",
                 "title": "Epic One",
@@ -564,7 +438,7 @@ class TestIntegrationQueueOrder:
                 "parent_ref": None,
                 "blocking": [],
             },
-            "Story One": {
+            "story-1": {
                 "number": 2,
                 "level": "story",
                 "title": "Story One",
@@ -586,7 +460,7 @@ class TestIntegrationQueueOrder:
 
     def test_blocked_story_excluded_from_queue(self):
         manifest = {
-            "Blocked Story": {
+            "story-1": {
                 "number": 1,
                 "level": "story",
                 "title": "Blocked Story",
@@ -613,24 +487,27 @@ class TestIntegrationQueueOrder:
 class TestIntegrationFullPipeline:
     @patch("scripts.create_issues._get_issue_ids")
     @patch("scripts.create_issues._create_issue")
-    @patch("subprocess.run")
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_full_pipeline_parse_to_queue(
         self, mock_run, mock_create, mock_ids, tmp_path, monkeypatch
     ):
         """Smoke-test: parse → create → compliance → queue order."""
         monkeypatch.chdir(tmp_path)
 
-        # subprocess.run handles preflight + compliance
         def run_side(cmd, **kw):
             joined = " ".join(str(c) for c in cmd)
+            if "auth" in joined:
+                return make_ok()
             if "issueTypes" in joined:
-                return _make_ok(
+                return make_ok(
                     json.dumps(
                         {
                             "data": {
                                 "organization": {
                                     "issueTypes": {
-                                        "nodes": json.loads(ISSUE_TYPES_JSON)
+                                        "nodes": json.loads(MOCK_ISSUE_TYPES_RESPONSE)[
+                                            "data"
+                                        ]["organization"]["issueTypes"]["nodes"]
                                     }
                                 }
                             }
@@ -638,10 +515,10 @@ class TestIntegrationFullPipeline:
                     )
                 )
             if "projectV2" in joined:
-                return _make_ok(FIELDS_JSON)
+                return make_ok(MOCK_PROJECT_FIELDS_RESPONSE)
             if "labels" in joined:
-                return _make_ok("[]")
-            return _make_ok(_GOOD_BODY)
+                return make_ok("[]")
+            return make_ok(GOOD_BODY)
 
         mock_run.side_effect = run_side
 
@@ -650,7 +527,7 @@ class TestIntegrationFullPipeline:
         def create_side(repo, title, body):
             n = counter[0]
             counter[0] += 1
-            return _issue_url(n)
+            return issue_url(n)
 
         def ids_side(repo, number):
             return {

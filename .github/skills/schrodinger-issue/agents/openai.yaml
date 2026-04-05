@@ -1,0 +1,4 @@
+interface:
+  display_name: "Schrödinger Issue"
+  short_description: "Retroactively create a GitHub issue from changes"
+  default_prompt: "Use $schrodinger-issue to create a GitHub issue retroactively from the current git changes."
