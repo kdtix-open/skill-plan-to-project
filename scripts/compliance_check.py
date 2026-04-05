@@ -14,32 +14,30 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from scripts.constants import MUTATION_KEYWORDS, SECURITY_SECTION, TDD_SENTINEL
+from scripts.gh_helpers import (
+    GitHubAPIError,
+    get_issue_body,
+    get_issue_labels,
+    update_issue_body,
+)
 
 # ---------------------------------------------------------------------------
 # Compliance rule patterns
 # ---------------------------------------------------------------------------
 
-TDD_SENTINEL = "TDD followed: failing test written BEFORE implementation"
-TDD_FULL_LINE = (
-    "- [ ] TDD followed: failing test written BEFORE implementation"
-    " (Red phase confirmed before writing any production code)"
-)
+TDD_SENTINEL_CHECK = "TDD followed: failing test written BEFORE implementation"
 
 SECURITY_HEADER_RE = re.compile(r"^#{1,4}\s+Security", re.MULTILINE | re.IGNORECASE)
 DEPENDENCIES_RE = re.compile(r"^#{1,4}\s+Dependenc", re.MULTILINE | re.IGNORECASE)
 ASSUMPTIONS_RE = re.compile(r"^#{1,4}\s+Assumptions", re.MULTILINE | re.IGNORECASE)
 MOSCOW_RE = re.compile(r"^#{1,4}\s+MoSCoW", re.MULTILINE | re.IGNORECASE)
 SUBTASKS_RE = re.compile(r"^#{1,4}\s+Subtasks", re.MULTILINE | re.IGNORECASE)
-IMPL_OPTIONS_RE = re.compile(
-    r"^#{1,4}\s+Implementation\s+Options", re.MULTILINE | re.IGNORECASE
-)
 RELEASE_VALUE_RE = re.compile(
     r"^#{1,4}\s+Release\s+Value", re.MULTILINE | re.IGNORECASE
 )
@@ -48,11 +46,6 @@ WHY_MATTERS_RE = re.compile(
 )
 TLDR_RE = re.compile(r"^#{1,4}\s+TL;?DR", re.MULTILINE | re.IGNORECASE)
 DONE_WHEN_RE = re.compile(r"I Know I Am Done When", re.IGNORECASE)
-
-MUTATION_KEYWORDS_RE = re.compile(
-    r"\b(create|update|delete|resolve|write|set|build|implement)\b",
-    re.IGNORECASE,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +64,7 @@ def check_issue(
     gaps: list[dict[str, Any]] = []
 
     # P0-1: Missing TDD language
-    if TDD_SENTINEL not in body:
+    if TDD_SENTINEL_CHECK not in body:
         gaps.append(
             {
                 "severity": "P0",
@@ -82,7 +75,7 @@ def check_issue(
         )
 
     # P0-2: Missing Security/Compliance on mutation issues
-    is_mutation = bool(MUTATION_KEYWORDS_RE.search(title + " " + body))
+    is_mutation = bool(MUTATION_KEYWORDS.search(title + " " + body))
     has_security = bool(SECURITY_HEADER_RE.search(body))
     if is_mutation and not has_security and level in ("epic", "story", "task"):
         gaps.append(
@@ -182,24 +175,18 @@ def autofix_body(body: str, gaps: list[dict[str, Any]]) -> str:
         if rule == "P0-1":
             # Inject TDD line into I Know I Am Done When section
             if DONE_WHEN_RE.search(body):
-                # Append after the "I Know I Am Done When" header line
                 body = re.sub(
                     r"(I Know I Am Done When\n+)",
-                    rf"\1{TDD_FULL_LINE}\n",
+                    rf"\1{TDD_SENTINEL}\n",
                     body,
                     count=1,
                 )
             else:
-                body += f"\n\n## I Know I Am Done When\n\n{TDD_FULL_LINE}\n"
+                body += f"\n\n## I Know I Am Done When\n\n{TDD_SENTINEL}\n"
             gap["fixed"] = True
 
         elif rule == "P0-2":
-            body += (
-                "\n\n### Security/Compliance\n\n"
-                "- [ ] Input validated before use\n"
-                "- [ ] No secrets committed to source\n"
-                "- [ ] Least-privilege gh CLI scopes used\n"
-            )
+            body += SECURITY_SECTION
             gap["fixed"] = True
 
         elif rule == "P0-3":
@@ -215,85 +202,6 @@ def autofix_body(body: str, gaps: list[dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess helpers
-# ---------------------------------------------------------------------------
-
-
-def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        cmd,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-    )
-    if check and result.returncode != 0:
-        print(f"[ERROR] {' '.join(cmd)}", file=sys.stderr)
-        print(result.stderr.strip(), file=sys.stderr)
-        sys.exit(result.returncode)
-    return result
-
-
-def _get_body(repo: str, number: int) -> str:
-    result = _run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(number),
-            "--repo",
-            repo,
-            "--json",
-            "body",
-            "--jq",
-            ".body",
-        ]
-    )
-    return result.stdout.strip()
-
-
-def _get_labels(repo: str, number: int) -> list[str]:
-    result = _run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(number),
-            "--repo",
-            repo,
-            "--json",
-            "labels",
-            "--jq",
-            "[.labels[].name]",
-        ]
-    )
-    return json.loads(result.stdout.strip() or "[]")
-
-
-def _update_body(repo: str, number: int, body: str) -> None:
-    fd, tmp = tempfile.mkstemp(suffix=".md")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
-        _run(
-            [
-                "gh",
-                "issue",
-                "edit",
-                str(number),
-                "--repo",
-                repo,
-                "--body-file",
-                tmp,
-            ]
-        )
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-
-
-# ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
 
@@ -301,11 +209,13 @@ def _update_body(repo: str, number: int, body: str) -> None:
 def run_compliance_check(
     manifest: dict[str, Any],
     repo: str,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run compliance check on all issues in manifest.
 
     Returns a report dict with summary and per-issue gap details.
     """
+    out = output_dir or Path(".")
     report: dict[str, Any] = {
         "summary": {
             "total_issues": len(manifest),
@@ -319,16 +229,17 @@ def run_compliance_check(
     for title, record in manifest.items():
         number = record["number"]
         level = record["level"]
-        body = _get_body(repo, number)
-        labels = _get_labels(repo, number)
+        display_title = record.get("title", title)
+        body = get_issue_body(repo, number)
+        labels = get_issue_labels(repo, number)
         has_blocked = "blocked" in labels
 
-        gaps = check_issue(number, title, body, level, has_blocked)
+        gaps = check_issue(number, display_title, body, level, has_blocked)
 
         p0_gaps = [g for g in gaps if g["severity"] == "P0"]
         if p0_gaps:
             fixed_body = autofix_body(body, p0_gaps)
-            _update_body(repo, number, fixed_body)
+            update_issue_body(repo, number, fixed_body)
             report["summary"]["p0_fixed"] += sum(1 for g in p0_gaps if g["fixed"])
 
         report["summary"]["p1_gaps"] += sum(1 for g in gaps if g["severity"] == "P1")
@@ -338,15 +249,15 @@ def run_compliance_check(
             report["issues"].append(
                 {
                     "number": number,
-                    "title": title,
+                    "title": display_title,
                     "gaps": gaps,
                 }
             )
 
         status = "✓" if not p0_gaps else f"fixed {len(p0_gaps)} P0"
-        print(f"[check] #{number} {title} — {status}")
+        print(f"[check] #{number} {display_title} — {status}")
 
-    report_path = Path("compliance-report.json")
+    report_path = out / "compliance-report.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     s = report["summary"]
     print(
@@ -369,6 +280,7 @@ def main() -> None:
     )
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--repo", required=True)
+    parser.add_argument("--output-dir", default=None, help="Output directory")
     args = parser.parse_args()
 
     path = Path(args.manifest)
@@ -377,7 +289,12 @@ def main() -> None:
         sys.exit(1)
 
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    run_compliance_check(manifest, args.repo)
+    out = Path(args.output_dir) if args.output_dir else None
+    try:
+        run_compliance_check(manifest, args.repo, output_dir=out)
+    except GitHubAPIError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

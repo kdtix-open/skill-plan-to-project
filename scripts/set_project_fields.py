@@ -15,30 +15,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Subprocess helper
-# ---------------------------------------------------------------------------
-
-
-def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        cmd,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-    )
-    if check and result.returncode != 0:
-        print(f"[ERROR] Command failed: {' '.join(cmd)}", file=sys.stderr)
-        print(result.stderr.strip(), file=sys.stderr)
-        sys.exit(result.returncode)
-    return result
-
+from scripts.gh_helpers import GitHubAPIError, graphql
 
 # ---------------------------------------------------------------------------
 # GraphQL mutations
@@ -77,17 +59,9 @@ mutation($issueId: ID!, $issueTypeId: ID!) {
 """
 
 
-def _graphql(query: str, variables: dict[str, str]) -> dict[str, Any]:
-    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
-    for k, v in variables.items():
-        cmd += ["-f", f"{k}={v}"]
-    result = _run(cmd)
-    return json.loads(result.stdout)
-
-
 def _add_to_project(project_id: str, node_id: str) -> str:
     """Add issue to project V2; return the project item ID."""
-    data = _graphql(
+    data = graphql(
         _ADD_TO_PROJECT_MUTATION,
         {"projectId": project_id, "contentId": node_id},
     )
@@ -100,7 +74,7 @@ def _set_field(
     field_id: str,
     option_id: str,
 ) -> None:
-    _graphql(
+    graphql(
         _SET_FIELD_MUTATION,
         {
             "projectId": project_id,
@@ -112,7 +86,7 @@ def _set_field(
 
 
 def _set_issue_type(node_id: str, issue_type_id: str) -> None:
-    _graphql(
+    graphql(
         _SET_ISSUE_TYPE_MUTATION,
         {"issueId": node_id, "issueTypeId": issue_type_id},
     )
@@ -217,7 +191,11 @@ def main() -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     config = json.loads(config_path.read_text(encoding="utf-8"))
 
-    set_project_fields(manifest, config, issue_types_only=args.issue_types_only)
+    try:
+        set_project_fields(manifest, config, issue_types_only=args.issue_types_only)
+    except GitHubAPIError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
