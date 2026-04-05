@@ -432,8 +432,8 @@ def _render_template(template_text: str, item: dict[str, Any], level: str) -> st
     impl_text = desc or "[What this task implements]"
 
     replacements = {
-        "[TITLE]": title,
         "[CODE] [TITLE]": title,
+        "[TITLE]": title,
         "[CODE]": "",
         "[STATUS]": "Backlog",
         "[PRIORITY]": priority,

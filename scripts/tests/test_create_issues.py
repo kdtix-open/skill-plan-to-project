@@ -102,9 +102,11 @@ class TestGenerateBody:
         assert "TDD followed" in body
 
     def test_tdd_sentinel_not_duplicated_when_present(self):
+        """Verify generate_body doesn't inject extra TDD sentinels."""
         item = {"title": "X", "description": "", "priority": "P0", "size": "S"}
         body = create_issues.generate_body(item, "scope")
-        assert body.count("TDD followed") >= 1
+        template_count = create_issues._load_template("scope").count("TDD followed")
+        assert body.count("TDD followed") == template_count
 
     def test_security_section_injected_for_mutation_title(self):
         item = {

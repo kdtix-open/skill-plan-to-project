@@ -13,9 +13,7 @@ jobs:
   copilot-setup-steps:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
+      contents: read
       actions: read
       checks: read
       statuses: read

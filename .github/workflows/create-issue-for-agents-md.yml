@@ -35,11 +35,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ensure copilot-instructions label exists
+      - name: Ensure required labels exist
         run: |
           gh label create "copilot-instructions" \
             --repo "$GITHUB_REPOSITORY" \
             --description "GitHub Copilot custom instruction files" \
+            --color "0075ca" 2>/dev/null || true
+          gh label create "documentation" \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "Improvements or additions to documentation" \
             --color "0075ca" 2>/dev/null || true
 
       - name: Create issue (skip if already exists)

@@ -18,12 +18,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ensure schrodinger-issue label exists
+      - name: Ensure required labels exist
         run: |
           gh label create "schrodinger-issue" \
             --repo "$GITHUB_REPOSITORY" \
             --description "Retroactively created issue tracking work that happened before the issue existed" \
             --color "8B5CF6" 2>/dev/null || true
+          gh label create "documentation" \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "Improvements or additions to documentation" \
+            --color "0075ca" 2>/dev/null || true
 
       - name: Create Schrodinger Issue (skip if already exists)
         run: |

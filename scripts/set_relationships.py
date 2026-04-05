@@ -120,7 +120,8 @@ def _find_by_ref(ref: str, by_title: dict[str, Any]) -> dict[str, Any] | None:
     # 2. Substring match — collect all candidates
     candidates: list[tuple[str, dict[str, Any]]] = []
     for title, record in by_title.items():
-        if ref_lower in title.lower():
+        title_lower = title.lower()
+        if ref_lower in title_lower or title_lower in ref_lower:
             candidates.append((title, record))
 
     if len(candidates) == 1:

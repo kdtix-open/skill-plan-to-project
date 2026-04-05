@@ -72,6 +72,9 @@ def run_gh(
     Raises:
         GitHubAPIError: If command fails after all retries.
     """
+    if retries < 1:
+        retries = 1
+
     last_result: subprocess.CompletedProcess[str] | None = None
 
     for attempt in range(retries):
