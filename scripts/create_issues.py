@@ -22,12 +22,25 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+from scripts.constants import (
+    LEVEL_TO_ISSUE_TYPE,
+    MUTATION_KEYWORDS,
+    SECURITY_SECTION,
+    TDD_SENTINEL,
+)
+from scripts.gh_helpers import (
+    AuthError,
+    GitHubAPIError,
+    PreflightError,
+    check_auth,
+    run_gh,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -48,52 +61,8 @@ PRIORITY_RE = re.compile(r"^Priority:\s*(P[012])", re.IGNORECASE | re.MULTILINE)
 SIZE_RE = re.compile(r"^Size:\s*(XS|S|M|L|XL)\b", re.IGNORECASE | re.MULTILINE)
 BLOCKS_RE = re.compile(r"^Blocks?:\s*(.+)", re.IGNORECASE | re.MULTILINE)
 
-MUTATION_KEYWORDS = re.compile(
-    r"\b(create|update|delete|resolve|write|set|build|implement)\b",
-    re.IGNORECASE,
-)
-
-TDD_SENTINEL = (
-    "- [ ] TDD followed: failing test written BEFORE implementation"
-    " (Red phase confirmed before writing any production code)"
-)
-
-# ---------------------------------------------------------------------------
-# Subprocess helper
-# ---------------------------------------------------------------------------
-
-
-def _run(
-    cmd: list[str],
-    check: bool = True,
-    capture: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        cmd,
-        text=True,
-        encoding="utf-8",
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
-    )
-    if check and result.returncode != 0:
-        print(f"[ERROR] Command failed: {' '.join(cmd)}", file=sys.stderr)
-        if capture:
-            print(result.stderr.strip(), file=sys.stderr)
-        sys.exit(result.returncode)
-    return result
-
-
-def _check_auth() -> None:
-    result = subprocess.run(
-        ["gh", "auth", "status"],
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        print("[ERROR] gh not authenticated. Run: gh auth login", file=sys.stderr)
-        sys.exit(1)
-
+# Directory containing asset templates (resolved relative to repo root)
+_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 # ---------------------------------------------------------------------------
 # Phase 1 / Task #15: parse_plan
@@ -138,7 +107,7 @@ def parse_plan(filepath: str) -> dict[str, Any]:
         if level is not None:
             _flush()
             body_lines = []
-            title = _strip_header_prefix(line, level)
+            title = _strip_header_prefix(line)
             current = {
                 "level": level,
                 "title": title,
@@ -162,7 +131,7 @@ def _detect_level(line: str) -> str | None:
     return None
 
 
-def _strip_header_prefix(line: str, level: str) -> str:
+def _strip_header_prefix(line: str) -> str:
     """Remove markdown heading hashes and known prefixes, return clean title."""
     stripped = re.sub(r"^#+\s+", "", line).strip()
     prefixes = [
@@ -280,16 +249,24 @@ EXPECTED_ISSUE_TYPES = {
 EXPECTED_FIELDS = ("Priority", "Size", "Status")
 
 
-def preflight(org: str, repo: str, project_number: int) -> dict[str, Any]:
+def preflight(
+    org: str, repo: str, project_number: int, output_dir: Path | None = None
+) -> dict[str, Any]:
     """Validate org Issue Types and project V2 field IDs.
 
     Returns a config dict with issue_type_ids and field_ids.
-    Exits with a clear error message if anything required is missing.
+
+    Raises:
+        AuthError: If gh is not authenticated.
+        PreflightError: If required types or fields are missing.
+        GitHubAPIError: If API calls fail.
     """
-    _check_auth()
+    check_auth()
+
+    out = output_dir or Path(".")
 
     # --- Issue Types ---
-    result = _run(
+    result = run_gh(
         [
             "gh",
             "api",
@@ -308,13 +285,11 @@ def preflight(org: str, repo: str, project_number: int) -> dict[str, Any]:
         .get("nodes", [])
     )
     if not nodes:
-        print(
-            f"[ERROR] No Issue Types found for org '{org}'. "
+        raise PreflightError(
+            f"No Issue Types found for org '{org}'. "
             "Configure Issue Types (Project Scope, Initiative, Epic, User Story, Task) "
-            "at https://github.com/organizations/{org}/settings/issue-types",
-            file=sys.stderr,
+            f"at https://github.com/organizations/{org}/settings/issue-types"
         )
-        sys.exit(1)
 
     issue_type_ids: dict[str, str] = {}
     for node in nodes:
@@ -328,16 +303,14 @@ def preflight(org: str, repo: str, project_number: int) -> dict[str, Any]:
         k for k in EXPECTED_ISSUE_TYPES.values() if k not in issue_type_ids
     ]
     if missing_types:
-        print(
-            f"[ERROR] Missing Issue Types in org '{org}': {missing_types}. "
+        raise PreflightError(
+            f"Missing Issue Types in org '{org}': {missing_types}. "
             "All 5 types (Project Scope, Initiative, Epic, "
-            "User Story, Task) are required.",
-            file=sys.stderr,
+            "User Story, Task) are required."
         )
-        sys.exit(1)
 
     # --- Project V2 fields ---
-    result = _run(
+    result = run_gh(
         [
             "gh",
             "api",
@@ -353,11 +326,7 @@ def preflight(org: str, repo: str, project_number: int) -> dict[str, Any]:
     data = json.loads(result.stdout)
     proj = data.get("data", {}).get("organization", {}).get("projectV2", {})
     if not proj:
-        print(
-            f"[ERROR] Project #{project_number} not found in org '{org}'.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        raise PreflightError(f"Project #{project_number} not found in org '{org}'.")
 
     project_id = proj["id"]
     field_nodes = proj.get("fields", {}).get("nodes", [])
@@ -373,12 +342,10 @@ def preflight(org: str, repo: str, project_number: int) -> dict[str, Any]:
 
     missing_fields = [f for f in EXPECTED_FIELDS if f not in field_ids]
     if missing_fields:
-        print(
-            f"[ERROR] Missing project fields: {missing_fields}. "
-            "Project V2 must have Priority, Size, and Status single-select fields.",
-            file=sys.stderr,
+        raise PreflightError(
+            f"Missing project fields: {missing_fields}. "
+            "Project V2 must have Priority, Size, and Status single-select fields."
         )
-        sys.exit(1)
 
     config = {
         "project_id": project_id,
@@ -389,23 +356,31 @@ def preflight(org: str, repo: str, project_number: int) -> dict[str, Any]:
         "field_ids": field_ids,
     }
 
-    config_path = Path("manifest-config.json")
+    config_path = out / "manifest-config.json"
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     print(f"[OK] preflight passed → {config_path}")
     return config
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 / Task #18: generate_body
+# Phase 3 / Task #18: generate_body (template-based)
 # ---------------------------------------------------------------------------
 
-LEVEL_TO_ISSUE_TYPE = {
-    "scope": "Project Scope",
-    "initiative": "Initiative",
-    "epic": "Epic",
-    "story": "User Story",
-    "task": "Task",
-}
+# Cache loaded templates
+_template_cache: dict[str, str] = {}
+
+
+def _load_template(level: str) -> str:
+    """Load a markdown template from assets/, with caching."""
+    if level not in _template_cache:
+        filename = f"template-{level}.md"
+        # For story, the template is named template-story.md
+        path = _ASSETS_DIR / filename
+        if path.exists():
+            _template_cache[level] = path.read_text(encoding="utf-8")
+        else:
+            _template_cache[level] = ""
+    return _template_cache[level]
 
 
 def generate_body(
@@ -414,14 +389,20 @@ def generate_body(
     manifest: dict[str, int] | None = None,
 ) -> str:
     """Generate a template-compliant issue body for the given item and level."""
-    generators = {
-        "scope": _body_scope,
-        "initiative": _body_initiative,
-        "epic": _body_epic,
-        "story": _body_story,
-        "task": _body_task,
-    }
-    body = generators[level](item, manifest or {})
+    template_text = _load_template(level)
+
+    if template_text:
+        body = _render_template(template_text, item, level)
+    else:
+        # Fallback to programmatic generation
+        generators = {
+            "scope": _body_scope,
+            "initiative": _body_initiative,
+            "epic": _body_epic,
+            "story": _body_story,
+            "task": _body_task,
+        }
+        body = generators[level](item, manifest or {})
 
     # Auto-inject TDD sentinel if missing
     if "TDD followed" not in body:
@@ -433,17 +414,75 @@ def generate_body(
         else:
             body += f"\n\n## I Know I Am Done When\n{TDD_SENTINEL}\n"
 
-    # Auto-inject Security/Compliance if mutation keywords present and section missing
+    # Auto-inject Security/Compliance if mutation keywords present and missing
     title_and_body = item.get("title", "") + " " + body
     if MUTATION_KEYWORDS.search(title_and_body) and "Security/Compliance" not in body:
-        body += (
-            "\n\n### Security/Compliance\n\n"
-            "- [ ] Input validated before use\n"
-            "- [ ] No secrets committed to source\n"
-            "- [ ] Least-privilege gh CLI scopes used\n"
-        )
+        body += SECURITY_SECTION
 
     return body
+
+
+def _render_template(template_text: str, item: dict[str, Any], level: str) -> str:
+    """Render an asset template by substituting placeholders."""
+    title = item.get("title", "")
+    desc = item.get("description", "")
+    priority = item.get("priority", "P1")
+    size = item.get("size", "M")
+    parent = item.get("parent_ref", "")
+    vision_text = desc or "[Vision statement]"
+    obj_text = desc or "[Objective]"
+    summary_text = desc or "[1-sentence summary]"
+    impl_text = desc or "[What this task implements]"
+
+    replacements = {
+        "[CODE] [TITLE]": title,
+        "[TITLE]": title,
+        "[CODE]": "",
+        "[STATUS]": "Backlog",
+        "[PRIORITY]": priority,
+        "[P0/P1/P2]": priority,
+        "[P0/P1/P2] — [LABEL]": priority,
+        "[SIZE]": size,
+        "[TIMEFRAME]": "TBD",
+        "[OWNER]": "TBD",
+        (
+            "[VISION — 1-2 sentences on the end" " state and the value delivered]"
+        ): vision_text,
+        (
+            "[Why this initiative exists and what" " problem it solves — 2-4 sentences]"
+        ): obj_text,
+        "[Why this epic exists — 2-4 sentences]": obj_text,
+        ("[1-sentence summary of what" " this story delivers]"): summary_text,
+        ("[1-3 sentences describing exactly" " what this task implements]"): impl_text,
+        "[VERSION]": "TBD",
+        "[POINTS]": "TBD",
+        "[HOURS]": "TBD",
+        "[POINTS] pts": "TBD",
+        "[HOURS] hrs": "TBD",
+        "#[N] [EPIC TITLE]": parent or "TBD",
+        "#[N] [STORY TITLE]": parent or "TBD",
+        "[Backend/Frontend/Infrastructure/QA]": "Backend",
+    }
+
+    rendered = template_text
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+
+    # Inject parent reference for levels that have one
+    if parent and level in ("epic", "story", "task"):
+        if "> **Parent" not in rendered:
+            # Add parent ref after the first heading line
+            lines = rendered.split("\n", 1)
+            if len(lines) == 2:
+                parent_labels = {
+                    "epic": "Parent Initiative",
+                    "story": "Parent Epic",
+                    "task": "Parent Story",
+                }
+                label = parent_labels.get(level, "Parent")
+                rendered = f"{lines[0]}\n\n> **{label}**: {parent}\n{lines[1]}"
+
+    return rendered
 
 
 def _meta_block(item: dict[str, Any], level: str) -> str:
@@ -648,6 +687,7 @@ def create_all_issues(
     hierarchy: dict[str, Any],
     config: dict[str, Any],
     repo: str,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Create all issues top-down and return a manifest dict.
 
@@ -655,10 +695,12 @@ def create_all_issues(
         hierarchy: Output of parse_plan().
         config: Output of preflight().
         repo: GitHub repo in owner/name format.
+        output_dir: Directory to write manifest.json (default: CWD).
 
     Returns:
-        manifest: Maps item title → {number, nodeId, databaseId, level, parent_ref}
+        manifest: Maps unique key → {number, nodeId, databaseId, level, ...}
     """
+    out = output_dir or Path(".")
     manifest: dict[str, Any] = {}
     ordered: list[tuple[str, dict[str, Any] | None]] = []
 
@@ -672,6 +714,9 @@ def create_all_issues(
         ordered.append(("story", story))
     for task in hierarchy.get("tasks", []):
         ordered.append(("task", task))
+
+    # Track per-level index for unique keys
+    level_counters: dict[str, int] = {}
 
     for level, item in ordered:
         if item is None:
@@ -690,6 +735,10 @@ def create_all_issues(
         number = int(url.rstrip("/").split("/")[-1])
         ids = _get_issue_ids(repo, number)
 
+        # Use level-index key to avoid title collisions
+        level_counters[level] = level_counters.get(level, 0) + 1
+        manifest_key = f"{level}-{level_counters[level]}"
+
         record = {
             "number": number,
             "nodeId": ids["nodeId"],
@@ -701,11 +750,11 @@ def create_all_issues(
             "size": item.get("size", "M"),
             "blocking": item.get("blocking", []),
         }
-        manifest[item["title"]] = record
+        manifest[manifest_key] = record
         print(f"[created] #{number} {full_title}")
         time.sleep(0.5)
 
-    manifest_path = Path("manifest.json")
+    manifest_path = out / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"[OK] manifest → {manifest_path} ({len(manifest)} issues)")
     return manifest
@@ -717,7 +766,7 @@ def _create_issue(repo: str, title: str, body: str) -> str:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(body)
-        result = _run(
+        result = run_gh(
             [
                 "gh",
                 "issue",
@@ -739,7 +788,7 @@ def _create_issue(repo: str, title: str, body: str) -> str:
 
 
 def _get_issue_ids(repo: str, number: int) -> dict[str, Any]:
-    result = _run(
+    result = run_gh(
         [
             "gh",
             "api",
@@ -772,13 +821,15 @@ def _cmd_parse(args: argparse.Namespace) -> None:
 
 
 def _cmd_preflight(args: argparse.Namespace) -> None:
-    preflight(args.org, args.repo, args.project)
+    out = Path(args.output_dir) if args.output_dir else None
+    preflight(args.org, args.repo, args.project, output_dir=out)
 
 
 def _cmd_create(args: argparse.Namespace) -> None:
-    config = preflight(args.org, args.repo, args.project)
+    out = Path(args.output_dir) if args.output_dir else None
+    config = preflight(args.org, args.repo, args.project, output_dir=out)
     hierarchy = parse_plan(args.plan)
-    create_all_issues(hierarchy, config, args.repo)
+    create_all_issues(hierarchy, config, args.repo, output_dir=out)
 
 
 def main() -> None:
@@ -796,12 +847,14 @@ def main() -> None:
     p_pre.add_argument("--org", required=True)
     p_pre.add_argument("--repo", required=True)
     p_pre.add_argument("--project", required=True, type=int)
+    p_pre.add_argument("--output-dir", default=None, help="Output directory")
 
     p_create = sub.add_parser("create", help="Run preflight + parse + create issues")
     p_create.add_argument("--plan", required=True)
     p_create.add_argument("--org", required=True)
     p_create.add_argument("--repo", required=True)
     p_create.add_argument("--project", required=True, type=int)
+    p_create.add_argument("--output-dir", default=None, help="Output directory")
 
     args = parser.parse_args()
     dispatch = {
@@ -809,7 +862,11 @@ def main() -> None:
         "preflight": _cmd_preflight,
         "create": _cmd_create,
     }
-    dispatch[args.command](args)
+    try:
+        dispatch[args.command](args)
+    except (AuthError, PreflightError, GitHubAPIError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

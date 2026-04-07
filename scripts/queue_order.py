@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from scripts.gh_helpers import GitHubAPIError, get_issue_labels, run_gh
 
 # ---------------------------------------------------------------------------
 # Priority / size ordering
@@ -43,41 +44,13 @@ def _priority_key(record: dict[str, Any]) -> tuple[int, int, int]:
 # ---------------------------------------------------------------------------
 
 
-def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        cmd,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-    )
-    if check and result.returncode != 0:
-        print(f"[ERROR] {' '.join(cmd)}", file=sys.stderr)
-        print(result.stderr.strip(), file=sys.stderr)
-        sys.exit(result.returncode)
-    return result
-
-
-def _get_issue_labels(repo: str, number: int) -> list[str]:
-    result = _run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(number),
-            "--repo",
-            repo,
-            "--json",
-            "labels",
-            "--jq",
-            "[.labels[].name]",
-        ]
-    )
-    return json.loads(result.stdout.strip() or "[]")
-
-
 def _get_project_status(repo: str, number: int) -> str:
-    """Get the Status field value of an issue (best-effort via gh)."""
-    result = _run(
+    """Get the Status field value of an issue from its project items.
+
+    Filters specifically for the 'Status' field to avoid returning
+    other single-select field values like Priority or Size.
+    """
+    result = run_gh(
         [
             "gh",
             "issue",
@@ -88,7 +61,11 @@ def _get_project_status(repo: str, number: int) -> str:
             "--json",
             "projectItems",
             "--jq",
-            '[.projectItems[].fieldValues[].value? // empty] | first // "Backlog"',
+            (
+                "[.projectItems[].fieldValues[] "
+                '| select(.field.name == "Status") '
+                '.value // empty] | first // "Backlog"'
+            ),
         ],
         check=False,
     )
@@ -147,7 +124,7 @@ def compute_queue_order(
         if labels_map is not None:
             labels = labels_map.get(number, [])
         else:
-            labels = _get_issue_labels(repo, number)
+            labels = get_issue_labels(repo, number)
 
         # Blocked issues are ineligible
         if "blocked" in labels:
@@ -187,8 +164,13 @@ def compute_queue_order(
     return ordered
 
 
-def run_queue_order(manifest: dict[str, Any], repo: str) -> list[dict[str, Any]]:
+def run_queue_order(
+    manifest: dict[str, Any],
+    repo: str,
+    output_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     """Run the full queue order computation and write results."""
+    out = output_dir or Path(".")
     ordered = compute_queue_order(manifest, repo)
 
     print("\n=== Recommended Queue Order (Stories) ===")
@@ -209,7 +191,7 @@ def run_queue_order(manifest: dict[str, Any], repo: str) -> list[dict[str, Any]]
         for i, r in enumerate(ordered, 1)
     ]
 
-    out_path = Path("queue-order.json")
+    out_path = out / "queue-order.json"
     out_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
     print(f"\n[OK] queue-order.json written ({len(output)} stories)")
     return ordered
@@ -227,6 +209,7 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--project", required=True, type=int)
+    parser.add_argument("--output-dir", default=None, help="Output directory")
     args = parser.parse_args()
 
     path = Path(args.manifest)
@@ -235,7 +218,12 @@ def main() -> None:
         sys.exit(1)
 
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    run_queue_order(manifest, args.repo)
+    out = Path(args.output_dir) if args.output_dir else None
+    try:
+        run_queue_order(manifest, args.repo, output_dir=out)
+    except GitHubAPIError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

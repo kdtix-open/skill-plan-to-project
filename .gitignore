@@ -34,6 +34,14 @@ Thumbs.db
 /tmp/
 *.tmp
 
+# Non-distribution files (belong in consuming repos, not this skill repo)
+.github/docs/
+.github/instructions/
+.github/skills/
+.github/copilot-instructions.md
+.github/create-issue-for-agents-md-body.md
+.github/PULL_REQUEST_TEMPLATE.md
+
 # Manifest outputs (runtime artifacts, not source)
 manifest.json
 manifest-config.json

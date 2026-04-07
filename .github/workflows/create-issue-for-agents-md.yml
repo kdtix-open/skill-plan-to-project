@@ -1,0 +1,93 @@
+name: Create Issue for copilot/add-agents-md-file changes
+
+on:
+  # Run manually from the Actions tab after this PR is merged.
+  # https://github.com/kdtix-open/modular-engineering-guides/actions
+  workflow_dispatch:
+    inputs:
+      project_number:
+        description: 'GitHub Project V2 number to add the issue to'
+        required: false
+        default: '5'
+      project_owner:
+        description: 'Owner (org or user) of the GitHub Project'
+        required: false
+        default: 'kdtix-open'
+      pr_number:
+        description: 'PR number to update with a Closes reference'
+        required: false
+        default: '1'
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  create-issue-and-link-pr:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROJECT_NUMBER: ${{ inputs.project_number }}
+      PROJECT_OWNER: ${{ inputs.project_owner }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure required labels exist
+        run: |
+          gh label create "copilot-instructions" \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "GitHub Copilot custom instruction files" \
+            --color "0075ca" 2>/dev/null || true
+          gh label create "documentation" \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "Improvements or additions to documentation" \
+            --color "0075ca" 2>/dev/null || true
+
+      - name: Create issue (skip if already exists)
+        id: create-issue
+        run: |
+          TITLE="feat: Add GitHub Copilot layered instruction files and guide library bootstrap"
+
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --state open --search "$TITLE" --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            echo "Issue already exists: #$EXISTING"
+            echo "issue_number=$EXISTING" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ISSUE_URL=$(gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --label "documentation" \
+            --label "copilot-instructions" \
+            --body-file .github/create-issue-for-agents-md-body.md)
+          ISSUE_NUM="${ISSUE_URL##*/issues/}"
+          echo "Created issue #$ISSUE_NUM: $ISSUE_URL"
+          echo "issue_number=$ISSUE_NUM" >> "$GITHUB_OUTPUT"
+
+      - name: Add issue to org project
+        if: steps.create-issue.outputs.issue_number != ''
+        continue-on-error: true
+        run: |
+          gh project item-add "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" \
+            --url "https://github.com/$GITHUB_REPOSITORY/issues/${{ steps.create-issue.outputs.issue_number }}"
+
+      - name: Update PR to reference the issue
+        if: steps.create-issue.outputs.issue_number != ''
+        run: |
+          ISSUE_NUM="${{ steps.create-issue.outputs.issue_number }}"
+          CLOSE_REF="Closes #${ISSUE_NUM}"
+          CURRENT_BODY=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body')
+          if echo "$CURRENT_BODY" | grep -qF "$CLOSE_REF"; then
+            echo "PR #$PR_NUMBER already references issue #$ISSUE_NUM - no update needed"
+          else
+            NEW_BODY=$(printf '%s\n\n%s' "$CLOSE_REF" "$CURRENT_BODY")
+            gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$NEW_BODY"
+            echo "Updated PR #$PR_NUMBER to reference issue #$ISSUE_NUM"
+          fi
