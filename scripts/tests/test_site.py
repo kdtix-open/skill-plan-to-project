@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import tomllib
+
 ROOT = Path(__file__).resolve().parents[2]
 SITE_ROOT = ROOT / "site"
 
@@ -32,6 +34,25 @@ def test_pages_site_content_covers_install_and_support() -> None:
         "cNi6oG973dks4mOfLv9AA00?client_reference_id="
         "kdtix-open-skill-plan-to-project" in html
     )
+
+
+def test_pages_site_content_covers_release_and_docs_links() -> None:
+    html = (SITE_ROOT / "index.html").read_text(encoding="utf-8")
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = pyproject["project"]["version"]
+
+    assert f"Current version: v{version}" in html
+    assert "Release &amp; Docs" in html
+    assert "CHANGELOG.md" in html
+    assert "RELEASING.md" in html
+    assert "github.com/kdtix-open/skill-plan-to-project/releases" in html
+
+
+def test_pages_site_script_uses_release_list_endpoint_without_404_fallback() -> None:
+    js = (SITE_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "/releases?per_page=1" in js
+    assert "/releases/latest" not in js
 
 
 def test_package_json_has_pages_scripts() -> None:

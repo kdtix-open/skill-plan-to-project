@@ -14,6 +14,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 - Pull requests now explicitly call out release note and changelog expectations for user-visible changes.
+- The public site now surfaces the current package version, changelog, GitHub Releases, and maintainer release docs.
 
 ## [0.1.0] - 2026-04-14
 

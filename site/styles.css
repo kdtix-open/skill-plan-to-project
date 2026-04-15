@@ -157,6 +157,9 @@ pre {
 .install-card,
 .install-strip,
 .workflow-card,
+.release-card,
+.release-note-box,
+.release-signal,
 .access-card,
 .insider-panel,
 .support-panel {
@@ -172,6 +175,9 @@ pre {
 .hero-panel::before,
 .install-card::before,
 .workflow-card::before,
+.release-card::before,
+.release-note-box::before,
+.release-signal::before,
 .access-card::before,
 .insider-panel::before,
 .support-panel::before {
@@ -359,6 +365,7 @@ h3 {
 
 .install-grid,
 .workflow-grid,
+.release-grid,
 .access-grid {
   display: grid;
   gap: 1.25rem;
@@ -372,12 +379,17 @@ h3 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.release-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .access-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .install-card,
 .workflow-card,
+.release-card,
 .access-card {
   border-radius: var(--radius-md);
   padding: 1.45rem;
@@ -416,6 +428,39 @@ h3 {
 
 .workflow-card {
   min-height: 240px;
+}
+
+.release-section {
+  margin-top: 4.8rem;
+}
+
+.release-overview {
+  display: grid;
+  grid-template-columns: 1.35fr 0.65fr;
+  gap: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.release-signal,
+.release-note-box {
+  border-radius: var(--radius-md);
+  padding: 1.5rem;
+}
+
+.release-signal {
+  background: linear-gradient(135deg, rgba(0, 184, 212, 0.08), rgba(255, 255, 255, 0.03));
+}
+
+.release-note-box {
+  display: grid;
+  align-content: center;
+  gap: 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.release-card {
+  display: grid;
+  gap: 0.95rem;
 }
 
 .early-access-section {
@@ -572,6 +617,11 @@ h3 {
   padding: 1rem 0;
 }
 
+.site-footer a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
 @keyframes drift {
   0% {
     transform: translate3d(0, 0, 0);
@@ -588,6 +638,7 @@ h3 {
   .hero,
   .install-grid,
   .workflow-grid,
+  .release-grid,
   .access-grid,
   .insider-panel {
     grid-template-columns: 1fr 1fr;
@@ -597,6 +648,7 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .release-overview,
   .support-panel,
   .install-strip {
     grid-template-columns: 1fr;
@@ -617,6 +669,7 @@ h3 {
 
   .access-grid,
   .workflow-grid,
+  .release-grid,
   .install-grid,
   .insider-panel {
     grid-template-columns: 1fr;
