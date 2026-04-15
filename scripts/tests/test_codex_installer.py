@@ -100,6 +100,9 @@ class TestCodexInstaller:
             plugin_manifest["interface"]["composerIcon"] == "./assets/plugin-icon.png"
         )
         assert plugin_manifest["interface"]["logo"] == "./assets/plugin-icon.png"
+        assert (
+            plugin_manifest["interface"]["websiteURL"] == "https://skills.projectit.ai"
+        )
         assert (plugin_root / "assets" / "plugin-icon.png").exists()
         assert (
             plugin_root / "skills" / "plan-to-project" / "references" / "plan-format.md"

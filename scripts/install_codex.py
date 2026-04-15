@@ -166,7 +166,7 @@ def build_plugin_manifest(version: str) -> dict[str, object]:
             "name": "KDTIX Open",
             "url": "https://github.com/kdtix-open",
         },
-        "homepage": "https://github.com/kdtix-open/skill-plan-to-project",
+        "homepage": "https://skills.projectit.ai",
         "repository": "https://github.com/kdtix-open/skill-plan-to-project",
         "license": "MIT",
         "keywords": ["codex", "skill", "github", "planning"],
@@ -176,12 +176,13 @@ def build_plugin_manifest(version: str) -> dict[str, object]:
             "shortDescription": "Turn a markdown plan into a GitHub Project backlog.",
             "longDescription": (
                 "Installs the plan-to-project skill as a Codex plugin so teams can "
-                "use it from a shared repo or local plugin catalog."
+                "use it from a shared repo or local plugin catalog. To have it appear "
+                "under the Skills tab, install with --destination home-skill instead."
             ),
             "developerName": "KDTIX Open",
             "category": "Productivity",
             "capabilities": ["Interactive", "Write"],
-            "websiteURL": "https://github.com/kdtix-open/skill-plan-to-project",
+            "websiteURL": "https://skills.projectit.ai",
             "composerIcon": f"./assets/{PLUGIN_ICON_NAME}",
             "logo": f"./assets/{PLUGIN_ICON_NAME}",
             "defaultPrompt": [

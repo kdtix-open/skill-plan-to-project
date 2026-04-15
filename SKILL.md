@@ -23,7 +23,7 @@ GitHub Project backlog in a single workflow.
   `User Story`, `Task`
 - Target GitHub Project V2 has fields: `Priority` (P0/P1/P2), `Size` (XS/S/M/L/XL),
   `Status` (Backlog/In Progress/Done/Blocked)
-- Input plan follows KDTIX markdown structure (see [references/plan-format.md](references/plan-format.md))
+- Input plan follows KDTIX markdown structure (see [plan-format.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/plan-format.md))
 
 ## Inputs
 
@@ -192,7 +192,7 @@ Prints ordered list to stdout and writes `queue-order.json`.
 
 ## Design Decisions
 
-See [references/design-decisions.md](references/design-decisions.md) for the full
+See [design-decisions.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/design-decisions.md) for the full
 rationale. Key choices:
 
 | Decision | Choice | Why |
@@ -206,14 +206,14 @@ rationale. Key choices:
 
 ## Templates and References
 
-- [assets/template-scope.md](assets/template-scope.md) — Project Scope issue body template
-- [assets/template-initiative.md](assets/template-initiative.md) — Initiative issue body template
-- [assets/template-epic.md](assets/template-epic.md) — Epic issue body template
-- [assets/template-story.md](assets/template-story.md) — User Story issue body template
-- [assets/template-task.md](assets/template-task.md) — Task issue body template
-- [references/plan-format.md](references/plan-format.md) — Expected markdown plan structure
-- [references/github-graphql.md](references/github-graphql.md) — GraphQL queries for Issue Types and project fields
-- [references/sub-issues-api.md](references/sub-issues-api.md) — Sub-issues REST API patterns
-- [references/gh-cli-patterns.md](references/gh-cli-patterns.md) — Reliable `gh` CLI invocation patterns
-- [references/compliance-rules.md](references/compliance-rules.md) — P0/P1/P2 gap definitions and auto-fix rules
-- [references/design-decisions.md](references/design-decisions.md) — Full design rationale
+- [template-scope.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/assets/template-scope.md) — Project Scope issue body template
+- [template-initiative.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/assets/template-initiative.md) — Initiative issue body template
+- [template-epic.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/assets/template-epic.md) — Epic issue body template
+- [template-story.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/assets/template-story.md) — User Story issue body template
+- [template-task.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/assets/template-task.md) — Task issue body template
+- [plan-format.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/plan-format.md) — Expected markdown plan structure
+- [github-graphql.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/github-graphql.md) — GraphQL queries for Issue Types and project fields
+- [sub-issues-api.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/sub-issues-api.md) — Sub-issues REST API patterns
+- [gh-cli-patterns.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/gh-cli-patterns.md) — Reliable `gh` CLI invocation patterns
+- [compliance-rules.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/compliance-rules.md) — P0/P1/P2 gap definitions and auto-fix rules
+- [design-decisions.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/design-decisions.md) — Full design rationale

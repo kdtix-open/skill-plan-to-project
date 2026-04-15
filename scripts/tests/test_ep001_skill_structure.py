@@ -104,6 +104,13 @@ class TestSkillMd:
     def test_prerequisites_section_present(self, skill_md: str) -> None:
         assert "Prerequisites" in skill_md or "prerequisites" in skill_md
 
+    def test_reference_links_use_public_urls_for_plugin_ui(self, skill_md: str) -> None:
+        assert "](references/" not in skill_md
+        assert "](assets/" not in skill_md
+        assert (
+            "https://github.com/kdtix-open/skill-plan-to-project/blob/main/" in skill_md
+        )
+
 
 # ---------------------------------------------------------------------------
 # Story #7: Bundle Template Assets & Create Reference Documents
