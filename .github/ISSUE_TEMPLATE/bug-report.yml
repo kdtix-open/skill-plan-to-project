@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible defect in plan-to-project.
+title: "[Bug]: "
+labels:
+  - bug
+projects:
+  - kdtix-open/8
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a defect.
+        This form automatically routes the issue into the repo's project intake.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Current behavior
+      description: What happened, and why is it a problem?
+      placeholder: Describe the failure clearly and concisely.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide numbered steps so we can reproduce the defect.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Python version, `gh` version, and any relevant repo or plugin context.
+      placeholder: macOS 14, Python 3.13, gh 2.x, home-plugin install
+    validations:
+      required: true
+  - type: textarea
+    id: regression-test
+    attributes:
+      label: Proposed regression coverage
+      description: If you know it, describe the failing regression test or scenario that should guard this bug.
+      placeholder: Add a regression test in scripts/tests/...
+    validations:
+      required: false

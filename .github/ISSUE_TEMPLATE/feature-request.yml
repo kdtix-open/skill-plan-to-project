@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose a new capability or meaningful enhancement.
+title: "[Feature]: "
+labels:
+  - enhancement
+projects:
+  - kdtix-open/8
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for new capabilities, behavioral improvements, or workflow enhancements.
+        It routes the request into the project backlog with the correct tracking metadata.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user or maintainer problem are we trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior or workflow.
+    validations:
+      required: true
+  - type: dropdown
+    id: moscow
+    attributes:
+      label: MoSCoW priority
+      description: Which bucket best describes this request?
+      options:
+        - Must Have
+        - Should Have
+        - Could Have
+        - Won't Have (this time)
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: Success criteria
+      description: What should be true when this work is done?
+      placeholder: |
+        - Behavior X works
+        - Docs updated
+        - Tests cover the new path
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: What are you doing today, and why is it insufficient?
+    validations:
+      required: false

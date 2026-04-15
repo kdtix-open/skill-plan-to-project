@@ -1,0 +1,33 @@
+name: Documentation request
+description: Request missing, unclear, or inaccurate documentation updates.
+title: "[Docs]: "
+labels:
+  - documentation
+projects:
+  - kdtix-open/8
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation work is tracked in the same project so release notes and onboarding stay accurate.
+  - type: textarea
+    id: gap
+    attributes:
+      label: Documentation gap
+      description: What is missing, confusing, or incorrect today?
+    validations:
+      required: true
+  - type: textarea
+    id: audience
+    attributes:
+      label: Intended audience
+      description: Who is blocked by this gap? (plugin users, maintainers, reviewers, contributors)
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-update
+    attributes:
+      label: Proposed update
+      description: Which file or area should change, and what should it say?
+    validations:
+      required: true

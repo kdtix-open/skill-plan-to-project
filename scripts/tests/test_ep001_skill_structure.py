@@ -297,3 +297,133 @@ class TestOpenAIYaml:
         assert (
             not github_mcp_tools
         ), "openai.yaml should not require GitHub MCP for this CLI-based skill"
+
+
+# ---------------------------------------------------------------------------
+# Repository operations: issue intake and release management scaffolding
+# ---------------------------------------------------------------------------
+
+
+class TestIssueIntakeScaffolding:
+    """Acceptance tests for issue forms and project-tracking intake."""
+
+    ISSUE_FORMS = [
+        ("bug-report.yml", "bug"),
+        ("feature-request.yml", "enhancement"),
+        ("documentation-request.yml", "documentation"),
+    ]
+
+    @pytest.fixture
+    def issue_template_dir(self) -> Path:
+        path = SKILL_ROOT / ".github" / "ISSUE_TEMPLATE"
+        assert path.is_dir(), ".github/ISSUE_TEMPLATE must exist"
+        return path
+
+    def test_issue_template_config_exists(self, issue_template_dir: Path) -> None:
+        config_path = issue_template_dir / "config.yml"
+        assert config_path.exists(), "Issue template chooser config must exist"
+
+    def test_issue_template_config_disables_blank_issues(
+        self, issue_template_dir: Path
+    ) -> None:
+        config = yaml.safe_load((issue_template_dir / "config.yml").read_text())
+        assert config["blank_issues_enabled"] is False
+
+    def test_issue_template_config_points_support_to_public_site(
+        self, issue_template_dir: Path
+    ) -> None:
+        config = yaml.safe_load((issue_template_dir / "config.yml").read_text())
+        links = config.get("contact_links", [])
+        assert any(
+            isinstance(link, dict)
+            and "https://skills.projectit.ai" in str(link.get("url", ""))
+            for link in links
+        ), "Issue template contact links should include the public support site"
+
+    @pytest.mark.parametrize(("filename", "expected_label"), ISSUE_FORMS)
+    def test_issue_form_exists(
+        self, issue_template_dir: Path, filename: str, expected_label: str
+    ) -> None:
+        path = issue_template_dir / filename
+        assert path.exists(), f"{filename} must exist"
+
+    @pytest.mark.parametrize(("filename", "expected_label"), ISSUE_FORMS)
+    def test_issue_form_has_required_top_level_keys(
+        self, issue_template_dir: Path, filename: str, expected_label: str
+    ) -> None:
+        data = yaml.safe_load((issue_template_dir / filename).read_text())
+        for key in ["name", "description", "body"]:
+            assert key in data, f"{filename} must define {key}"
+
+    @pytest.mark.parametrize(("filename", "expected_label"), ISSUE_FORMS)
+    def test_issue_form_routes_issues_to_repo_project(
+        self, issue_template_dir: Path, filename: str, expected_label: str
+    ) -> None:
+        data = yaml.safe_load((issue_template_dir / filename).read_text())
+        assert data["projects"] == ["kdtix-open/8"]
+
+    @pytest.mark.parametrize(("filename", "expected_label"), ISSUE_FORMS)
+    def test_issue_form_applies_expected_tracking_label(
+        self, issue_template_dir: Path, filename: str, expected_label: str
+    ) -> None:
+        data = yaml.safe_load((issue_template_dir / filename).read_text())
+        labels = data.get("labels", [])
+        assert expected_label in labels
+
+
+class TestReleaseManagementScaffolding:
+    """Acceptance tests for a production-like release pattern."""
+
+    def test_changelog_exists(self) -> None:
+        path = SKILL_ROOT / "CHANGELOG.md"
+        assert path.exists(), "CHANGELOG.md must exist"
+
+    def test_changelog_has_keep_a_changelog_sections(self) -> None:
+        content = (SKILL_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        assert "## [Unreleased]" in content
+        assert "## [0.1.0]" in content
+        assert "Added" in content
+
+    def test_releasing_guide_exists(self) -> None:
+        path = SKILL_ROOT / "RELEASING.md"
+        assert path.exists(), "RELEASING.md must exist"
+
+    def test_releasing_guide_documents_tagged_release_flow(self) -> None:
+        content = (SKILL_ROOT / "RELEASING.md").read_text(encoding="utf-8")
+        assert "git tag v" in content
+        assert "gh release create" in content
+        assert ".github/release.yml" in content
+
+    def test_github_release_config_exists(self) -> None:
+        path = SKILL_ROOT / ".github" / "release.yml"
+        assert path.exists(), ".github/release.yml must exist"
+
+    def test_github_release_config_has_changelog_categories(self) -> None:
+        config = yaml.safe_load((SKILL_ROOT / ".github" / "release.yml").read_text())
+        categories = config["changelog"]["categories"]
+        titles = {entry["title"] for entry in categories}
+        assert "Features" in titles
+        assert "Fixes" in titles
+        assert "Documentation" in titles
+
+    def test_release_workflow_exists(self) -> None:
+        path = SKILL_ROOT / ".github" / "workflows" / "release.yml"
+        assert path.exists(), "Release workflow must exist"
+
+    def test_release_workflow_uses_version_tags(self) -> None:
+        workflow = yaml.safe_load(
+            (SKILL_ROOT / ".github" / "workflows" / "release.yml").read_text()
+        )
+        assert workflow["on"]["push"]["tags"] == ["v*"]
+
+    def test_release_workflow_generates_notes(self) -> None:
+        content = (SKILL_ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        assert "--generate-notes" in content
+
+    def test_pr_template_mentions_release_notes_expectation(self) -> None:
+        content = (SKILL_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(
+            encoding="utf-8"
+        )
+        assert "Release notes / changelog updated" in content
