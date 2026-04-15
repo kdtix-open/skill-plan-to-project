@@ -427,3 +427,36 @@ class TestReleaseManagementScaffolding:
             encoding="utf-8"
         )
         assert "Release notes / changelog updated" in content
+
+
+class TestGuideLibraryExtensions:
+    """Acceptance tests for additional reusable engineering guides."""
+
+    def test_release_scaffolding_guide_exists(self) -> None:
+        path = (
+            SKILL_ROOT
+            / ".github"
+            / "docs"
+            / "processes"
+            / "release-scaffolding-guide.md"
+        )
+        assert path.exists(), "Release scaffolding guide must exist in process docs"
+
+    def test_release_scaffolding_guide_covers_key_artifacts(self) -> None:
+        content = (
+            SKILL_ROOT
+            / ".github"
+            / "docs"
+            / "processes"
+            / "release-scaffolding-guide.md"
+        ).read_text(encoding="utf-8")
+        for needle in [
+            ".github/ISSUE_TEMPLATE/",
+            "CHANGELOG.md",
+            ".github/release.yml",
+            ".github/workflows/release.yml",
+            "RELEASING.md",
+            "gh release create",
+            "Semantic Versioning",
+        ]:
+            assert needle in content, f"Guide must document {needle}"
