@@ -283,3 +283,17 @@ class TestOpenAIYaml:
             "plan-to-project" in skill_text
         ), "SKILL.md must reference plan-to-project"
         assert openai_data["interface"]["display_name"], "display_name must be set"
+
+    def test_does_not_require_github_mcp_server(self, openai_yaml: dict) -> None:
+        dependencies = openai_yaml.get("dependencies", {})
+        tools = dependencies.get("tools", []) if isinstance(dependencies, dict) else []
+        github_mcp_tools = [
+            tool
+            for tool in tools
+            if isinstance(tool, dict)
+            and tool.get("type") == "mcp"
+            and tool.get("value") == "github"
+        ]
+        assert (
+            not github_mcp_tools
+        ), "openai.yaml should not require GitHub MCP for this CLI-based skill"

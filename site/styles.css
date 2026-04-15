@@ -213,20 +213,20 @@ h3 {
 h1 {
   max-width: 13ch;
   font-size: clamp(3rem, 5vw, 6rem);
-  line-height: 1.08;
+  line-height: 1.12;
   letter-spacing: -0.05em;
 }
 
 h2 {
   max-width: 18ch;
   font-size: clamp(2.2rem, 3.1vw, 4.5rem);
-  line-height: 1.04;
+  line-height: 1.1;
   letter-spacing: -0.04em;
 }
 
 h3 {
   font-size: 1.45rem;
-  line-height: 1.06;
+  line-height: 1.1;
   letter-spacing: -0.03em;
 }
 

@@ -49,8 +49,9 @@ def test_package_json_has_pages_scripts() -> None:
     )
 
 
-def test_hero_typography_has_room_for_descenders() -> None:
+def test_heading_typography_has_room_for_descenders() -> None:
     css = (SITE_ROOT / "styles.css").read_text(encoding="utf-8")
 
-    assert "line-height: 1.08;" in css
+    assert "line-height: 1.12;" in css
+    assert "line-height: 1.1;" in css
     assert "font-size: 1rem;" in css
