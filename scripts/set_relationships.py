@@ -103,9 +103,11 @@ def set_blocking_labels(manifest: dict[str, Any], repo: str) -> None:
 
     for record in manifest.values():
         for blocking_ref in record.get("blocking", []):
-            blocker = _find_by_ref(blocking_ref, by_title)
-            if blocker:
-                blocked = record
+            # record is the blocker (it declares "Blocks: <ref>"); the
+            # referenced issue is the one being blocked.
+            blocked = _find_by_ref(blocking_ref, by_title)
+            if blocked:
+                blocker = record
                 pairs.append((blocker, blocked))
                 blocked_by_number[blocked["number"]] = blocked
                 blockers_by_blocked.setdefault(blocked["number"], []).append(blocker)

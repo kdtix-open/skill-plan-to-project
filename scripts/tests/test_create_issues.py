@@ -404,3 +404,123 @@ class TestCreateAllIssues:
             assert "-" in key, f"Key '{key}' should be level-index format"
             parts = key.rsplit("-", 1)
             assert parts[1].isdigit(), f"Key '{key}' should end with a number"
+
+
+# ---------------------------------------------------------------------------
+# _get_issue_ids transient-404 retry
+# ---------------------------------------------------------------------------
+
+
+class TestGetIssueIdsRetry:
+    """Regression tests for the read-after-write 404 retry in _get_issue_ids."""
+
+    def _make_404_result(self) -> object:
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.returncode = 1
+        m.stdout = ""
+        m.stderr = "HTTP 404: Not Found"
+        return m
+
+    @patch("time.sleep")
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_retries_on_transient_404_and_succeeds(
+        self, mock_run, mock_sleep, tmp_path, monkeypatch
+    ):
+        """_get_issue_ids must retry on 404 and succeed when GitHub catches up."""
+        import json
+
+        monkeypatch.chdir(tmp_path)
+        call_count = {"n": 0}
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "issues/" in joined and "--jq" in joined:
+                call_count["n"] += 1
+                if call_count["n"] < 3:
+                    return self._make_404_result()
+                return make_ok(
+                    json.dumps({"nodeId": "N1", "databaseId": 9999, "number": 101})
+                )
+            if "issue create" in joined:
+                return make_ok("https://github.com/org/repo/issues/101")
+            return make_ok()
+
+        mock_run.side_effect = side_effect
+        manifest = create_issues.create_all_issues(MINIMAL_HIERARCHY, {}, "org/repo")
+        assert len(manifest) == 5
+        # sleep was called for the 404 retries (at least twice — once per failure)
+        retry_sleeps = [
+            c for c in mock_sleep.call_args_list if c.args[0] != 0.5
+        ]
+        assert len(retry_sleeps) >= 2
+
+    @patch("time.sleep")
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_raises_after_max_wait_exceeded(
+        self, mock_run, mock_sleep, tmp_path, monkeypatch
+    ):
+        """_get_issue_ids must raise GitHubAPIError when max wait is exceeded."""
+        from scripts.gh_helpers import GitHubAPIError
+
+        monkeypatch.chdir(tmp_path)
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "issue create" in joined:
+                return make_ok("https://github.com/org/repo/issues/101")
+            # Always 404
+            return self._make_404_result()
+
+        mock_run.side_effect = side_effect
+        # Patch max-wait to 0 so we exhaust budget on first retry attempt
+        with patch.object(create_issues, "_GET_ISSUE_IDS_MAX_WAIT", 0.0):
+            with pytest.raises(GitHubAPIError):
+                create_issues.create_all_issues(MINIMAL_HIERARCHY, {}, "org/repo")
+
+    @patch("time.sleep")
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_no_extra_sleep_on_immediate_success(
+        self, mock_run, mock_sleep, tmp_path, monkeypatch
+    ):
+        """When GitHub responds immediately, no retry sleep should occur."""
+        monkeypatch.chdir(tmp_path)
+        mock_run.side_effect = self._make_ok_create_side_effect()
+        create_issues.create_all_issues(MINIMAL_HIERARCHY, {}, "org/repo")
+        # Only the 0.5 s pacing sleeps should fire — no retry sleeps
+        assert all(c.args[0] == 0.5 for c in mock_sleep.call_args_list)
+
+    @staticmethod
+    def _make_ok_create_side_effect():
+        import json
+        from unittest.mock import MagicMock
+
+        counter = {"n": 100}
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "issue create" in joined:
+                counter["n"] += 1
+                m = MagicMock()
+                m.returncode = 0
+                m.stdout = f"https://github.com/org/repo/issues/{counter['n']}"
+                m.stderr = ""
+                return m
+            if "issues/" in joined and "--jq" in joined:
+                n = counter["n"]
+                m = MagicMock()
+                m.returncode = 0
+                m.stdout = json.dumps(
+                    {"nodeId": f"N{n}", "databaseId": n * 100, "number": n}
+                )
+                m.stderr = ""
+                return m
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        return side_effect
+
