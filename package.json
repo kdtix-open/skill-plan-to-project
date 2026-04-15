@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "create:site": "wrangler pages project create skills-projectit-ai --production-branch main",
+    "dev:site": "wrangler pages dev site",
+    "deploy:site": "wrangler pages deploy site --project-name skills-projectit-ai --branch main"
+  },
+  "devDependencies": {
+    "wrangler": "^4.82.2"
+  }
+}

@@ -34,6 +34,48 @@ GitHub Project backlog in a single workflow.
 | `REPO` | Target repo (owner/name) | `kdtix-open/my-project` |
 | `PROJECT_NUMBER` | GitHub Project V2 number | `8` |
 
+## Installation
+
+### Codex user skill (`~/.codex/skills`)
+
+Install directly with Codex's built-in GitHub skill installer:
+
+```bash
+python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo kdtix-open/skill-plan-to-project \
+  --path .
+```
+
+### Codex native installer CLI (GitHub-backed)
+
+This repo also publishes a native installer entry point so users can install from the
+GitHub remote without cloning first:
+
+```bash
+uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination home-skill
+```
+
+### Codex plugin install
+
+Install as a home-local plugin:
+
+```bash
+uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination home-plugin
+```
+
+Install into a chosen repo as a repo-local plugin:
+
+```bash
+uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination repo-plugin --repo-root /path/to/repo
+```
+
+> **Note:** The supported repo-local distribution model is a Codex plugin
+> (`plugins/` + `.agents/plugins/marketplace.json`). User-scoped skills install under
+> `~/.codex/skills`.
+
 ## Workflow
 
 ### Phase 1 — Pre-flight validation

@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>skills.projectit.ai | plan-to-project</title>
+    <meta
+      name="description"
+      content="Install the KDTIX Open plan-to-project Codex skill, explore the workflow, and unlock Patreon-only access tiers while still supporting maintenance through Stripe."
+    />
+    <link rel="icon" href="./assets/plugin-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="masthead">
+        <a class="brand" href="https://github.com/kdtix-open/skill-plan-to-project">
+          <img
+            src="./assets/plugin-icon.png"
+            alt="Plan to Project plugin icon"
+            class="brand-mark"
+          />
+          <span class="brand-copy">
+            <strong>KDTIX Open</strong>
+            <span>plan-to-project</span>
+          </span>
+        </a>
+        <nav class="masthead-links" aria-label="Primary">
+          <a href="#install">Install</a>
+          <a href="#workflow">Workflow</a>
+          <a href="#early-access">Early Access</a>
+          <a href="#support">Support</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">skills.projectit.ai</p>
+            <h1>
+              Turn a plan into a
+              <span class="headline-accent">backlog</span>
+              without hand-building the project tree.
+            </h1>
+            <p class="hero-summary">
+              <code>plan-to-project</code> converts a markdown requirements plan into
+              a GitHub Project backlog with issue types, project fields, parent-child
+              structure, compliance checks, and queue ordering already wired in.
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="#install">Install the skill</a>
+              <a
+                class="button button-secondary"
+                href="https://github.com/kdtix-open/skill-plan-to-project"
+              >
+                View on GitHub
+              </a>
+            </div>
+            <ul class="signal-list" aria-label="Highlights">
+              <li>GitHub-backed install from <code>kdtix-open/skill-plan-to-project</code></li>
+              <li>Works as a personal skill or a Codex plugin</li>
+              <li>Built for KDTIX issue templates and project governance</li>
+            </ul>
+          </div>
+
+          <aside class="hero-panel" aria-label="Quick install preview">
+            <p class="panel-label">Fastest personal install</p>
+            <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination home-skill</code></pre>
+            <button class="copy-button hero-copy-button" data-copy-target="home-skill">
+              Copy command
+            </button>
+            <p class="panel-note">
+              Prefer the built-in Codex installer? The install section includes both
+              routes.
+            </p>
+          </aside>
+        </section>
+
+        <section class="section" id="install">
+          <div class="section-heading">
+            <p class="eyebrow">Install</p>
+            <h2>Choose the surface that fits your Codex workflow.</h2>
+          </div>
+
+          <div class="install-grid">
+            <article class="install-card">
+              <p class="card-kicker">Personal skill</p>
+              <h3>Install into <code>~/.codex/skills</code></h3>
+              <p>
+                Best when you want <code>plan-to-project</code> available across your
+                local Codex setup without wrapping it as a plugin.
+              </p>
+              <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination home-skill</code></pre>
+              <button class="copy-button" data-copy-target="home-skill">
+                Copy command
+              </button>
+            </article>
+
+            <article class="install-card">
+              <p class="card-kicker">Home plugin</p>
+              <h3>Install into your local plugin catalog</h3>
+              <p>
+                Best when you want a Codex-native plugin with icon, metadata, and local
+                marketplace registration.
+              </p>
+              <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination home-plugin</code></pre>
+              <button class="copy-button" data-copy-target="home-plugin">
+                Copy command
+              </button>
+            </article>
+
+            <article class="install-card">
+              <p class="card-kicker">Repo plugin</p>
+              <h3>Install into a chosen repository</h3>
+              <p>
+                Best when a team wants the plugin available inside one repo without
+                touching every contributor’s personal Codex home.
+              </p>
+              <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination repo-plugin --repo-root /path/to/repo</code></pre>
+              <button class="copy-button" data-copy-target="repo-plugin">
+                Copy command
+              </button>
+            </article>
+          </div>
+
+          <article class="install-strip">
+            <div>
+              <p class="card-kicker">Built-in Codex installer</p>
+              <h3>Prefer the native GitHub skill installer?</h3>
+            </div>
+            <pre><code>python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo kdtix-open/skill-plan-to-project \
+  --path .</code></pre>
+          </article>
+        </section>
+
+        <section class="section" id="workflow">
+          <div class="section-heading">
+            <p class="eyebrow">Workflow</p>
+            <h2>What the skill automates after install.</h2>
+          </div>
+
+          <div class="workflow-grid">
+            <article class="workflow-card">
+              <span>01</span>
+              <h3>Validate project setup</h3>
+              <p>
+                Confirms issue types, project fields, and GitHub prerequisites before
+                writing backlog data.
+              </p>
+            </article>
+            <article class="workflow-card">
+              <span>02</span>
+              <h3>Parse the markdown plan</h3>
+              <p>
+                Extracts Scope, Initiative, Epic, Story, and Task structure from the
+                KDTIX planning format.
+              </p>
+            </article>
+            <article class="workflow-card">
+              <span>03</span>
+              <h3>Create and connect issues</h3>
+              <p>
+                Builds the issue tree top-down, assigns issue types, links sub-issues,
+                and applies dependency labels.
+              </p>
+            </article>
+            <article class="workflow-card">
+              <span>04</span>
+              <h3>Enforce compliance and queue work</h3>
+              <p>
+                Runs the backlog through KDTIX compliance checks and outputs the next
+                recommended execution order.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section early-access-section" id="early-access">
+          <div class="section-heading early-heading">
+            <p class="eyebrow">Unlock Access</p>
+            <h2>
+              Ready to go beyond the
+              <span class="headline-accent">open source</span>
+              foundation?
+            </h2>
+            <p class="section-copy">
+              KDTIX Open provides the foundation, but the most powerful project
+              automation skills and insider repository access are reserved for our
+              Patreon supporters.
+            </p>
+          </div>
+
+          <div class="early-cta-row">
+            <a
+              class="button button-primary"
+              href="https://www.patreon.com/5419581/join"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Support on Patreon
+            </a>
+          </div>
+
+          <div class="access-grid">
+            <article class="access-card">
+              <div class="access-hex">
+                <img src="./assets/team.png" alt="Open Source Team" />
+              </div>
+              <h3>Open Source Team</h3>
+              <p>
+                Access to core repositories, public issue trackers, and the foundational
+                plan-to-project tools.
+              </p>
+              <span class="access-status">Public</span>
+            </article>
+
+            <article class="access-card locked">
+              <div class="access-hex">
+                <img src="./assets/early-access.png" alt="Early Access" />
+              </div>
+              <h3>Early Access</h3>
+              <p>
+                Preview upcoming features, experimental skill installers, and
+                specialized project templates before general release.
+              </p>
+              <a
+                class="unlock-link"
+                href="https://www.patreon.com/5419581/join"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Unlock Access
+              </a>
+            </article>
+
+            <article class="access-card locked">
+              <div class="access-hex">
+                <img src="./assets/insider-access.png" alt="Insider Access" />
+              </div>
+              <h3>Insider Access</h3>
+              <p>
+                Full repository visibility for private KDTIX extensions, AI-optimized
+                project trees, and advanced compliance scripts.
+              </p>
+              <a
+                class="unlock-link"
+                href="https://www.patreon.com/5419581/join"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Unlock Access
+              </a>
+            </article>
+
+            <article class="access-card locked">
+              <div class="access-hex">
+                <img src="./assets/maintainer.png" alt="Core Maintainer" />
+              </div>
+              <h3>Core Maintainer</h3>
+              <p>
+                Collaborate directly on project governance, architecture decisions, and
+                direct contributions to the projectit.ai ecosystem.
+              </p>
+              <a
+                class="unlock-link"
+                href="https://www.patreon.com/5419581/join"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Unlock Access
+              </a>
+            </article>
+          </div>
+
+          <article class="insider-panel">
+            <div class="insider-copy">
+              <p class="card-kicker">Join the KDTIX Insider Program</p>
+              <h3>Private repos, beta skills, and insider automation tools.</h3>
+              <p>
+                Become a contributor and unlock private repository access, exclusive AI
+                training datasets for project trees, and priority support for your
+                team’s custom plan-to-project workflows.
+              </p>
+              <ul class="insider-benefits">
+                <li>Private Repos</li>
+                <li>Beta Skills</li>
+                <li>Insider Tools</li>
+              </ul>
+            </div>
+            <div class="insider-cta">
+              <p>Access starts at just $5/mo</p>
+              <a
+                class="button patreon-button"
+                href="https://www.patreon.com/5419581/join"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Become a Patron
+              </a>
+              <p class="microcopy">Securely managed via Patreon</p>
+            </div>
+          </article>
+        </section>
+
+        <section class="section support-section" id="support">
+          <div class="support-panel">
+            <div>
+              <p class="eyebrow">Support the Maintainers</p>
+              <h2>Want to support the work without joining a Patreon tier?</h2>
+              <p>
+                If the plugin saves your team time, you can still help fund ongoing
+                maintenance directly through our Stripe support link.
+              </p>
+            </div>
+            <a
+              class="button button-secondary support-stripe"
+              href="https://donate.stripe.com/cNi6oG973dks4mOfLv9AA00?client_reference_id=kdtix-open-skill-plan-to-project"
+            >
+              Support via Stripe
+            </a>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <p>Hosted on Cloudflare Pages for the <code>projectit.ai</code> domain.</p>
+      </footer>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

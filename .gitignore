@@ -29,10 +29,17 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+.continue/
 
 # Temp files
 /tmp/
 *.tmp
+
+# Frontend and local tooling artifacts
+node_modules/
+output/
+.playwright-mcp/
+.wrangler/
 
 # Non-distribution files (belong in consuming repos, not this skill repo)
 .github/docs/
