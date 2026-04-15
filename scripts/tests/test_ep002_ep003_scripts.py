@@ -123,9 +123,12 @@ class TestSetBlockingLabels:
         ]
         assert len(relationship_calls) == 1
         call = relationship_calls[0]
-        assert "/repos/org/repo/issues/4/dependencies/blocked_by" in " ".join(call)
+        # story-1 (#4) has blocking=["Implement tokenizer"], so #4 is the blocker
+        # and task-1 (#5) is the blocked issue.  The native relationship is POSTed
+        # against the blocked issue (#5), referencing the blocker's databaseId.
+        assert "/repos/org/repo/issues/5/dependencies/blocked_by" in " ".join(call)
         assert "-F" in call
-        assert "issue_id=10005" in call
+        assert "issue_id=10004" in call
 
     def test_creates_missing_labels_before_applying(self):
         calls: list[list[str]] = []
@@ -189,24 +192,18 @@ class TestSetBlockingLabels:
 
         assert len(updated_bodies) == 1
         body = updated_bodies[0]
-        assert "Blocked by: #5" in body
+        # story-1 (#4) blocks task-1 (#5), so the blocked issue (#5) body is
+        # updated to say "Blocked by: #4".
+        assert "Blocked by: #4" in body
         assert body.count("Blocked by:") == 1
-        assert "| #5 | Implement tokenizer | Open |" in body
+        assert "| #4 | Build the widget | Open |" in body
         assert "| None | No blocking dependencies | N/A |" not in body
 
     def test_handles_multiple_blockers_without_duplicate_rows(self):
+        # Two separate issues each declare "Blocks: Queue orchestration".
+        # Correct semantics: Token-lease (#147) and Worker-drain (#160) are the
+        # blockers; Queue-orchestration (#168) is the blocked issue.
         manifest = {
-            "blocked-story": {
-                "number": 168,
-                "nodeId": "I_node_168",
-                "databaseId": 16800,
-                "level": "story",
-                "title": "Queue orchestration",
-                "parent_ref": None,
-                "priority": "P1",
-                "size": "M",
-                "blocking": ["Token lease", "Worker drain"],
-            },
             "blocker-1": {
                 "number": 147,
                 "nodeId": "I_node_147",
@@ -216,7 +213,7 @@ class TestSetBlockingLabels:
                 "parent_ref": None,
                 "priority": "P0",
                 "size": "S",
-                "blocking": [],
+                "blocking": ["Queue orchestration"],
             },
             "blocker-2": {
                 "number": 160,
@@ -227,6 +224,17 @@ class TestSetBlockingLabels:
                 "parent_ref": None,
                 "priority": "P0",
                 "size": "S",
+                "blocking": ["Queue orchestration"],
+            },
+            "blocked-story": {
+                "number": 168,
+                "nodeId": "I_node_168",
+                "databaseId": 16800,
+                "level": "story",
+                "title": "Queue orchestration",
+                "parent_ref": None,
+                "priority": "P1",
+                "size": "M",
                 "blocking": [],
             },
         }
@@ -274,13 +282,14 @@ class TestSetBlockingLabels:
     def test_idempotent_rerun_skips_existing_relationship_and_body_duplicates(self):
         updated_bodies: list[str] = []
         calls: list[str] = []
+        # story-1 (#4) blocks task-1 (#5) — existing body is already correct.
         existing_body = (
-            "# User Story: Build the widget\n\n"
-            "Blocked by: #5\n\n"
+            "# Task: Implement tokenizer\n\n"
+            "Blocked by: #4\n\n"
             "### Dependencies\n\n"
             "| Ticket | Description | Status |\n"
             "|--------|-------------|--------|\n"
-            "| #5 | Implement tokenizer | Open |\n"
+            "| #4 | Build the widget | Open |\n"
         )
 
         def run_gh_side_effect(cmd, **kwargs):
@@ -295,8 +304,8 @@ class TestSetBlockingLabels:
                             "dependencies": [
                                 {
                                     "issue": {
-                                        "number": 5,
-                                        "id": 10005,
+                                        "number": 4,
+                                        "id": 10004,
                                     }
                                 }
                             ]
@@ -324,8 +333,103 @@ class TestSetBlockingLabels:
         )
         assert len(updated_bodies) == 1
         body = updated_bodies[0]
-        assert body.count("Blocked by: #5") == 1
-        assert body.count("| #5 | Implement tokenizer | Open |") == 1
+        assert body.count("Blocked by: #4") == 1
+        assert body.count("| #4 | Build the widget | Open |") == 1
+
+    def test_blocker_direction_blocker_gets_blocks_label(self):
+        """Regression: issue with blocking=[...] must get 'blocks', not 'blocked'."""
+        labeled: dict[int, list[str]] = {}
+
+        def run_gh_side_effect(cmd, **kwargs):
+            joined = " ".join(str(part) for part in cmd)
+            if "label list" in joined:
+                return make_ok(json.dumps([{"name": "blocks"}, {"name": "blocked"}]))
+            if "/dependencies/blocked_by" in joined and "--method" not in joined:
+                return make_ok(json.dumps({"dependencies": []}))
+            if "add-label" in joined:
+                # Extract the issue number and label from the command
+                args = list(cmd)
+                try:
+                    num = int(args[args.index("edit") + 1])
+                    lbl = args[args.index("--add-label") + 1]
+                    labeled.setdefault(num, []).append(lbl)
+                except (ValueError, IndexError):
+                    pass
+            return make_ok("{}")
+
+        with (
+            patch("scripts.set_relationships.run_gh", side_effect=run_gh_side_effect),
+            patch("scripts.set_relationships.get_issue_body", return_value=""),
+            patch("scripts.set_relationships.update_issue_body"),
+        ):
+            set_relationships.set_blocking_labels(SAMPLE_MANIFEST, "org/repo")
+
+        # story-1 (#4) has blocking=["Implement tokenizer"], so #4 is the blocker
+        assert "blocks" in labeled.get(4, []), "#4 (blocker) must get 'blocks' label"
+        assert "blocked" not in labeled.get(4, []), "#4 must NOT get 'blocked' label"
+
+    def test_blocker_direction_blocked_gets_blocked_label(self):
+        """Regression: the referenced (blocked) issue must get 'blocked', not 'blocks'."""
+        labeled: dict[int, list[str]] = {}
+
+        def run_gh_side_effect(cmd, **kwargs):
+            joined = " ".join(str(part) for part in cmd)
+            if "label list" in joined:
+                return make_ok(json.dumps([{"name": "blocks"}, {"name": "blocked"}]))
+            if "/dependencies/blocked_by" in joined and "--method" not in joined:
+                return make_ok(json.dumps({"dependencies": []}))
+            if "add-label" in joined:
+                args = list(cmd)
+                try:
+                    num = int(args[args.index("edit") + 1])
+                    lbl = args[args.index("--add-label") + 1]
+                    labeled.setdefault(num, []).append(lbl)
+                except (ValueError, IndexError):
+                    pass
+            return make_ok("{}")
+
+        with (
+            patch("scripts.set_relationships.run_gh", side_effect=run_gh_side_effect),
+            patch("scripts.set_relationships.get_issue_body", return_value=""),
+            patch("scripts.set_relationships.update_issue_body"),
+        ):
+            set_relationships.set_blocking_labels(SAMPLE_MANIFEST, "org/repo")
+
+        # task-1 (#5, "Implement tokenizer") is referenced by story-1's blocking list,
+        # so #5 is the blocked issue.
+        assert "blocked" in labeled.get(5, []), "#5 (blocked) must get 'blocked' label"
+        assert "blocks" not in labeled.get(5, []), "#5 must NOT get 'blocks' label"
+
+    def test_native_relationship_posted_against_blocked_not_blocker(self):
+        """Regression: POST /blocked_by goes to the *blocked* issue endpoint."""
+        calls: list[list[str]] = []
+
+        def run_gh_side_effect(cmd, **kwargs):
+            calls.append(cmd)
+            joined = " ".join(str(part) for part in cmd)
+            if "label list" in joined:
+                return make_ok(json.dumps([{"name": "blocks"}, {"name": "blocked"}]))
+            if "/dependencies/blocked_by" in joined and "--method" not in joined:
+                return make_ok(json.dumps({"dependencies": []}))
+            return make_ok("{}")
+
+        with (
+            patch("scripts.set_relationships.run_gh", side_effect=run_gh_side_effect),
+            patch("scripts.set_relationships.get_issue_body", return_value=""),
+            patch("scripts.set_relationships.update_issue_body"),
+        ):
+            set_relationships.set_blocking_labels(SAMPLE_MANIFEST, "org/repo")
+
+        post_calls = [
+            " ".join(str(p) for p in cmd)
+            for cmd in calls
+            if "/dependencies/blocked_by" in " ".join(str(p) for p in cmd)
+            and "--method" in cmd
+        ]
+        assert len(post_calls) == 1
+        # The POST must target the blocked issue (#5), not the blocker (#4)
+        assert "issues/5/dependencies/blocked_by" in post_calls[0]
+        assert "issues/4/dependencies/blocked_by" not in post_calls[0]
 
     @patch("scripts.gh_helpers.subprocess.run")
     def test_set_blocking_labels_warns_on_unresolvable_ref(self, mock_run, capsys):

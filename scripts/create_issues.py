@@ -787,17 +787,44 @@ def _create_issue(repo: str, title: str, body: str) -> str:
             pass
 
 
+_GET_ISSUE_IDS_MAX_WAIT = 30.0  # seconds — total ceiling for 404 retries
+_GET_ISSUE_IDS_INITIAL_DELAY = 2.0  # seconds — first retry delay
+
+
 def _get_issue_ids(repo: str, number: int) -> dict[str, Any]:
-    result = run_gh(
-        [
-            "gh",
-            "api",
-            f"/repos/{repo}/issues/{number}",
-            "--jq",
-            "{nodeId: .node_id, databaseId: .id, number: .number}",
-        ],
-    )
-    return json.loads(result.stdout.strip())
+    """Fetch nodeId, databaseId, and number for a newly created issue.
+
+    GitHub can return a transient 404 immediately after issue creation due to
+    read-after-write replication lag.  This function retries with exponential
+    backoff (capped at 10 s) for up to _GET_ISSUE_IDS_MAX_WAIT seconds before
+    re-raising.
+    """
+    delay = _GET_ISSUE_IDS_INITIAL_DELAY
+    elapsed = 0.0
+    while True:
+        try:
+            result = run_gh(
+                [
+                    "gh",
+                    "api",
+                    f"/repos/{repo}/issues/{number}",
+                    "--jq",
+                    "{nodeId: .node_id, databaseId: .id, number: .number}",
+                ],
+            )
+            return json.loads(result.stdout.strip())
+        except GitHubAPIError as exc:
+            if "404" in str(exc) and elapsed < _GET_ISSUE_IDS_MAX_WAIT:
+                print(
+                    f"[RETRY] Issue #{number} returned 404 — waiting {delay:.1f}s "
+                    f"(elapsed {elapsed:.1f}s/{_GET_ISSUE_IDS_MAX_WAIT}s)",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                elapsed += delay
+                delay = min(delay * 2, 10.0)
+            else:
+                raise
 
 
 # ---------------------------------------------------------------------------
