@@ -72,6 +72,23 @@ class TestCodexInstaller:
         assert (skill_root / "agents" / "openai.yaml").exists()
         assert (skill_root / "assets" / "template-story.md").exists()
 
+    def test_claude_skill_installs_under_claude_home(self, tmp_path: Path) -> None:
+        source_root = tmp_path / "source"
+        source_root.mkdir()
+        _write_skill_source(source_root)
+
+        claude_home = tmp_path / "claude-home"
+        install_codex.install_from_source(
+            source_root=source_root,
+            destination=install_codex.InstallDestination.CLAUDE_SKILL,
+            claude_home=claude_home,
+        )
+
+        skill_root = claude_home / "skills" / "plan-to-project"
+        assert (skill_root / "SKILL.md").exists()
+        assert (skill_root / "agents" / "openai.yaml").exists()
+        assert (skill_root / "references" / "plan-format.md").exists()
+
     def test_home_plugin_creates_plugin_and_marketplace(self, tmp_path: Path) -> None:
         source_root = tmp_path / "source"
         source_root.mkdir()
@@ -244,6 +261,30 @@ class TestCodexInstaller:
         assert args.repo_root == repo_root
         assert args.source == "local"
 
+    def test_parse_args_accepts_claude_skill_options(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        claude_home = tmp_path / "claude-home"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "plan-to-project-install",
+                "--destination",
+                "claude-skill",
+                "--claude-home",
+                str(claude_home),
+                "--source",
+                "local",
+            ],
+        )
+
+        args = install_codex.parse_args()
+
+        assert args.destination == install_codex.InstallDestination.CLAUDE_SKILL
+        assert args.claude_home == claude_home
+        assert args.source == "local"
+
     def test_build_github_archive_url_allows_expected_repo_and_ref(self) -> None:
         archive_url = install_codex.build_github_archive_url(
             repo="kdtix-open/skill-plan-to-project",
@@ -278,6 +319,7 @@ class TestCodexInstaller:
             ref="main",
             source_root=source_root,
             codex_home=codex_home,
+            claude_home=None,
             repo_root=None,
             force=False,
         )
@@ -293,7 +335,7 @@ class TestCodexInstaller:
         captured = capsys.readouterr()
         assert result == 0
         assert f"Installed plan-to-project to {installed_path}" in captured.out
-        assert "Restart Codex" in captured.out
+        assert "Restart your agent" in captured.out
 
     def test_main_github_source_uses_downloaded_root(
         self,
@@ -312,6 +354,7 @@ class TestCodexInstaller:
             ref="main",
             source_root=source_root,
             codex_home=codex_home,
+            claude_home=None,
             repo_root=None,
             force=False,
         )

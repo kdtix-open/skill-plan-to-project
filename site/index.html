@@ -6,7 +6,7 @@
     <title>skills.projectit.ai | plan-to-project</title>
     <meta
       name="description"
-      content="Install the KDTIX Open plan-to-project Codex skill, explore the workflow, and unlock Patreon-only access tiers while still supporting maintenance through Stripe."
+      content="Install the KDTIX Open plan-to-project skill for Codex or Claude Code, explore the workflow, and unlock Patreon-only access tiers while still supporting maintenance through Stripe."
     />
     <link rel="icon" href="./assets/plugin-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -65,7 +65,7 @@
             </div>
             <ul class="signal-list" aria-label="Highlights">
               <li>GitHub-backed install from <code>kdtix-open/skill-plan-to-project</code></li>
-              <li>Works as a personal skill or a Codex plugin</li>
+              <li>Works as a personal skill in Codex or Claude Code, or as a Codex plugin</li>
               <li>Built for KDTIX issue templates and project governance</li>
             </ul>
           </div>
@@ -87,7 +87,7 @@
         <section class="section" id="install">
           <div class="section-heading">
             <p class="eyebrow">Install</p>
-            <h2>Choose the surface that fits your Codex workflow.</h2>
+            <h2>Choose the surface that fits your agent workflow.</h2>
           </div>
 
           <div class="install-grid">
@@ -101,6 +101,20 @@
               <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
   plan-to-project-install --destination home-skill</code></pre>
               <button class="copy-button" data-copy-target="home-skill">
+                Copy command
+              </button>
+            </article>
+
+            <article class="install-card">
+              <p class="card-kicker">Claude Code skill</p>
+              <h3>Install into <code>~/.claude/skills</code></h3>
+              <p>
+                Best when you want <code>plan-to-project</code> available across your
+                local Claude Code setup as a first-class personal skill.
+              </p>
+              <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination claude-skill</code></pre>
+              <button class="copy-button" data-copy-target="claude-skill">
                 Copy command
               </button>
             </article>

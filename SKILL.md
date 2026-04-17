@@ -56,6 +56,15 @@ uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
   plan-to-project-install --destination home-skill
 ```
 
+### Claude Code native installer CLI (GitHub-backed)
+
+Install as a personal Claude Code skill under `~/.claude/skills`:
+
+```bash
+uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination claude-skill
+```
+
 ### Codex plugin install
 
 Install as a home-local plugin:

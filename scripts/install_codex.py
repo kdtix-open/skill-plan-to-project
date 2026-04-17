@@ -1,4 +1,4 @@
-"""Install the plan-to-project skill into Codex-native destinations."""
+"""Install the plan-to-project skill into agent-native destinations."""
 
 from __future__ import annotations
 
@@ -32,9 +32,10 @@ SKILL_BUNDLE_ITEMS = (
 
 
 class InstallDestination(StrEnum):
-    """Supported Codex installation targets."""
+    """Supported skill and plugin installation targets."""
 
     HOME_SKILL = "home-skill"
+    CLAUDE_SKILL = "claude-skill"
     HOME_PLUGIN = "home-plugin"
     REPO_PLUGIN = "repo-plugin"
 
@@ -47,17 +48,29 @@ def resolve_codex_home(codex_home: Path | None = None) -> Path:
     return Path(raw_value).expanduser().resolve()
 
 
+def resolve_claude_home(claude_home: Path | None = None) -> Path:
+    """Return the effective Claude home directory."""
+    if claude_home is not None:
+        return claude_home.expanduser().resolve()
+    return Path("~/.claude").expanduser().resolve()
+
+
 def install_from_source(
     source_root: Path,
     destination: InstallDestination,
     codex_home: Path | None = None,
+    claude_home: Path | None = None,
     repo_root: Path | None = None,
     force: bool = False,
 ) -> Path:
-    """Install from a prepared source tree into a Codex-native destination."""
+    """Install from a prepared source tree into a supported destination."""
     validate_source_root(source_root)
     if destination == InstallDestination.HOME_SKILL:
         skill_root = resolve_codex_home(codex_home) / "skills" / SKILL_NAME
+        copy_skill_bundle(source_root, skill_root, force=force)
+        return skill_root
+    if destination == InstallDestination.CLAUDE_SKILL:
+        skill_root = resolve_claude_home(claude_home) / "skills" / SKILL_NAME
         copy_skill_bundle(source_root, skill_root, force=force)
         return skill_root
     if destination == InstallDestination.HOME_PLUGIN:
@@ -283,7 +296,9 @@ def github_source(repo: str, ref: str) -> Iterator[Path]:
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the installer."""
     parser = argparse.ArgumentParser(
-        description="Install plan-to-project into Codex-native destinations."
+        description=(
+            "Install plan-to-project into Codex, Claude Code, or plugin destinations."
+        )
     )
     parser.add_argument(
         "--destination",
@@ -321,6 +336,12 @@ def parse_args() -> argparse.Namespace:
         help="Override CODEX_HOME for home-skill or home-plugin installs.",
     )
     parser.add_argument(
+        "--claude-home",
+        type=Path,
+        default=None,
+        help="Override the Claude home directory for claude-skill installs.",
+    )
+    parser.add_argument(
         "--repo-root",
         type=Path,
         default=None,
@@ -342,6 +363,7 @@ def main() -> int:
             source_root=args.source_root.resolve(),
             destination=args.destination,
             codex_home=args.codex_home,
+            claude_home=args.claude_home,
             repo_root=args.repo_root,
             force=args.force,
         )
@@ -351,11 +373,12 @@ def main() -> int:
                 source_root=source_root,
                 destination=args.destination,
                 codex_home=args.codex_home,
+                claude_home=args.claude_home,
                 repo_root=args.repo_root,
                 force=args.force,
             )
     print(f"Installed {SKILL_NAME} to {installed_path}")
-    print("Restart Codex to pick up the new skill or plugin.")
+    print("Restart your agent to pick up the new skill or plugin.")
     return 0
 
 

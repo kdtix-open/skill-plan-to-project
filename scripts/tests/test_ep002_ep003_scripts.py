@@ -369,7 +369,7 @@ class TestSetBlockingLabels:
         assert "blocked" not in labeled.get(4, []), "#4 must NOT get 'blocked' label"
 
     def test_blocker_direction_blocked_gets_blocked_label(self):
-        """Regression: the referenced (blocked) issue must get 'blocked', not 'blocks'."""
+        """Regression: the referenced issue must get 'blocked', not 'blocks'."""
         labeled: dict[int, list[str]] = {}
 
         def run_gh_side_effect(cmd, **kwargs):

@@ -1,6 +1,8 @@
 const commandMap = {
   "home-skill": `uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \\
   plan-to-project-install --destination home-skill`,
+  "claude-skill": `uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \\
+  plan-to-project-install --destination claude-skill`,
   "home-plugin": `uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \\
   plan-to-project-install --destination home-plugin`,
   "repo-plugin": `uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \\
