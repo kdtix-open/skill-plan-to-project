@@ -65,6 +65,20 @@ uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
   plan-to-project-install --destination claude-skill
 ```
 
+### Cursor project rule installer CLI (GitHub-backed)
+
+Install as a repo-local Cursor project rule under `.cursor/rules`:
+
+```bash
+uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination cursor-rule --repo-root /path/to/repo
+```
+
+> **Note:** Cursor's official docs support project rules in `.cursor/rules`,
+> global user rules in settings, and deeplinks for MCP servers. This repo
+> installs the supported project-rule surface because `plan-to-project` is a
+> reusable workflow, not an MCP server.
+
 ### Codex plugin install
 
 Install as a home-local plugin:

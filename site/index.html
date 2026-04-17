@@ -6,7 +6,7 @@
     <title>skills.projectit.ai | plan-to-project</title>
     <meta
       name="description"
-      content="Install the KDTIX Open plan-to-project skill for Codex or Claude Code, explore the workflow, and unlock Patreon-only access tiers while still supporting maintenance through Stripe."
+      content="Install the KDTIX Open plan-to-project workflow for Codex, Claude Code, or Cursor, explore the workflow, and unlock Patreon-only access tiers while still supporting maintenance through Stripe."
     />
     <link rel="icon" href="./assets/plugin-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -65,7 +65,7 @@
             </div>
             <ul class="signal-list" aria-label="Highlights">
               <li>GitHub-backed install from <code>kdtix-open/skill-plan-to-project</code></li>
-              <li>Works as a personal skill in Codex or Claude Code, or as a Codex plugin</li>
+              <li>Works as a personal skill in Codex or Claude Code, a Cursor project rule, or a Codex plugin</li>
               <li>Built for KDTIX issue templates and project governance</li>
             </ul>
           </div>
@@ -115,6 +115,20 @@
               <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
   plan-to-project-install --destination claude-skill</code></pre>
               <button class="copy-button" data-copy-target="claude-skill">
+                Copy command
+              </button>
+            </article>
+
+            <article class="install-card">
+              <p class="card-kicker">Cursor project rule</p>
+              <h3>Install into <code>.cursor/rules</code></h3>
+              <p>
+                Best when you want <code>plan-to-project</code> available inside one
+                repository as a native Cursor project rule.
+              </p>
+              <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination cursor-rule --repo-root /path/to/repo</code></pre>
+              <button class="copy-button" data-copy-target="cursor-rule">
                 Copy command
               </button>
             </article>

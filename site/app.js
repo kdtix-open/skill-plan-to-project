@@ -3,6 +3,8 @@ const commandMap = {
   plan-to-project-install --destination home-skill`,
   "claude-skill": `uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \\
   plan-to-project-install --destination claude-skill`,
+  "cursor-rule": `uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \\
+  plan-to-project-install --destination cursor-rule --repo-root /path/to/repo`,
   "home-plugin": `uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \\
   plan-to-project-install --destination home-plugin`,
   "repo-plugin": `uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \\

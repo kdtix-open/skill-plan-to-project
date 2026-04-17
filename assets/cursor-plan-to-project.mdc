@@ -1,0 +1,41 @@
+---
+description: Convert a markdown requirements plan into a GitHub Project backlog using the plan-to-project workflow.
+alwaysApply: false
+---
+
+Use this rule when the user wants to turn a markdown requirements plan into a fully
+structured GitHub Project backlog with Scope, Initiative, Epic, Story, and Task
+hierarchy.
+
+Key expectations:
+
+- Follow the KDTIX markdown plan structure documented in:
+  https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/plan-format.md
+- Use the workflow documented in:
+  https://github.com/kdtix-open/skill-plan-to-project/blob/main/SKILL.md
+- Preserve issue type hierarchy, parent-child relationships, blocker handling, and
+  project field assignment.
+- Prefer the repo's tested Python + `gh` CLI workflow over inventing an alternative.
+
+Prerequisites to check before running the workflow:
+
+- `gh auth status`
+- Python 3.9+ available
+- Target GitHub org has Issue Types configured: `Project Scope`, `Initiative`, `Epic`,
+  `User Story`, `Task`
+- Target GitHub Project V2 has fields: `Priority`, `Size`, and `Status`
+
+When helping with this workflow:
+
+1. Validate prerequisites first.
+2. Parse the plan before creating issues.
+3. Create issues top-down.
+4. Set parent-child and blocker relationships.
+5. Apply project fields and issue types.
+6. Run compliance checks and review queue ordering.
+
+If the user needs the exact commands or deeper implementation details, send them to
+the source repo and workflow guide:
+
+- https://github.com/kdtix-open/skill-plan-to-project
+- https://skills.projectit.ai

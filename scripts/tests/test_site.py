@@ -24,6 +24,7 @@ def test_pages_site_content_covers_install_and_support() -> None:
     assert "skills.projectit.ai" in html
     assert "plan-to-project-install --destination home-skill" in html
     assert "plan-to-project-install --destination claude-skill" in html
+    assert "plan-to-project-install --destination cursor-rule" in html
     assert "plan-to-project-install --destination home-plugin" in html
     assert "--destination repo-plugin --repo-root /path/to/repo" in html
     assert "Support on Patreon" in html

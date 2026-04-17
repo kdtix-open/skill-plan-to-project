@@ -19,6 +19,7 @@ SKILL_NAME = "plan-to-project"
 DEFAULT_REPO = "kdtix-open/skill-plan-to-project"
 PLUGIN_ICON_NAME = "plugin-icon.png"
 PLUGIN_ICON_SOURCE = Path("assets") / PLUGIN_ICON_NAME
+CURSOR_RULE_SOURCE = Path("assets") / "cursor-plan-to-project.mdc"
 GITHUB_REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 GITHUB_REF_PATTERN = re.compile(r"[A-Za-z0-9._/-]+")
 SKILL_BUNDLE_ITEMS = (
@@ -36,6 +37,7 @@ class InstallDestination(StrEnum):
 
     HOME_SKILL = "home-skill"
     CLAUDE_SKILL = "claude-skill"
+    CURSOR_RULE = "cursor-rule"
     HOME_PLUGIN = "home-plugin"
     REPO_PLUGIN = "repo-plugin"
 
@@ -73,6 +75,11 @@ def install_from_source(
         skill_root = resolve_claude_home(claude_home) / "skills" / SKILL_NAME
         copy_skill_bundle(source_root, skill_root, force=force)
         return skill_root
+    if destination == InstallDestination.CURSOR_RULE:
+        if repo_root is None:
+            raise ValueError("repo_root is required for cursor-rule installs")
+        repo_root = repo_root.expanduser().resolve()
+        return install_cursor_rule(source_root, repo_root, force=force)
     if destination == InstallDestination.HOME_PLUGIN:
         home_root = resolve_codex_home(codex_home).parent
         return install_plugin_bundle(
@@ -123,6 +130,26 @@ def prepare_destination(destination_root: Path, force: bool) -> None:
         raise FileExistsError(f"Destination already exists: {destination_root}")
     if destination_root.exists():
         shutil.rmtree(destination_root)
+
+
+def prepare_file_destination(destination_path: Path, force: bool) -> None:
+    """Guard against accidental overwrite of an existing file installation."""
+    if destination_path.exists() and not force:
+        raise FileExistsError(f"Destination already exists: {destination_path}")
+    if destination_path.exists():
+        destination_path.unlink()
+
+
+def install_cursor_rule(source_root: Path, repo_root: Path, force: bool) -> Path:
+    """Install the Cursor project rule into a target repository."""
+    source_rule = source_root / CURSOR_RULE_SOURCE
+    if not source_rule.exists():
+        raise FileNotFoundError(f"Missing required Cursor rule: {source_rule}")
+    destination_rule = repo_root / ".cursor" / "rules" / f"{SKILL_NAME}.mdc"
+    prepare_file_destination(destination_rule, force=force)
+    destination_rule.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_rule, destination_rule)
+    return destination_rule
 
 
 def install_plugin_bundle(

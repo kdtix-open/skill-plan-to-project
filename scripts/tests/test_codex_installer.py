@@ -89,6 +89,27 @@ class TestCodexInstaller:
         assert (skill_root / "agents" / "openai.yaml").exists()
         assert (skill_root / "references" / "plan-format.md").exists()
 
+    def test_cursor_rule_installs_under_repo_cursor_rules(self, tmp_path: Path) -> None:
+        source_root = tmp_path / "source"
+        source_root.mkdir()
+        _write_skill_source(source_root)
+        source_root.joinpath("assets", "cursor-plan-to-project.mdc").write_text(
+            "---\ndescription: plan-to-project\nalwaysApply: false\n---\n",
+            encoding="utf-8",
+        )
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        install_codex.install_from_source(
+            source_root=source_root,
+            destination=install_codex.InstallDestination.CURSOR_RULE,
+            repo_root=repo_root,
+        )
+
+        rule_path = repo_root / ".cursor" / "rules" / "plan-to-project.mdc"
+        assert rule_path.exists()
+        assert "description: plan-to-project" in rule_path.read_text(encoding="utf-8")
+
     def test_home_plugin_creates_plugin_and_marketplace(self, tmp_path: Path) -> None:
         source_root = tmp_path / "source"
         source_root.mkdir()
@@ -283,6 +304,30 @@ class TestCodexInstaller:
 
         assert args.destination == install_codex.InstallDestination.CLAUDE_SKILL
         assert args.claude_home == claude_home
+        assert args.source == "local"
+
+    def test_parse_args_accepts_cursor_rule_options(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        repo_root = tmp_path / "repo"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "plan-to-project-install",
+                "--destination",
+                "cursor-rule",
+                "--repo-root",
+                str(repo_root),
+                "--source",
+                "local",
+            ],
+        )
+
+        args = install_codex.parse_args()
+
+        assert args.destination == install_codex.InstallDestination.CURSOR_RULE
+        assert args.repo_root == repo_root
         assert args.source == "local"
 
     def test_build_github_archive_url_allows_expected_repo_and_ref(self) -> None:
