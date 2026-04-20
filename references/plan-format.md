@@ -1,6 +1,7 @@
 # Plan Format Reference
 
-The plan-to-project skill expects a markdown file structured with the KDTIX 5-level hierarchy.
+The plan-to-project skill expects a markdown file structured with the KDTIX
+5-level hierarchy. A single project scope may contain one or more initiatives.
 
 ## Hierarchy Levels
 
@@ -63,8 +64,12 @@ Size: XS
   {
     "scope": { "title": "...", "description": "...", "priority": "P0", "size": "M", "blocking": [] },
     "initiative": { ... },
+    "initiatives": [ { ... } ],
     "epics": [ { ... } ],
     "stories": [ { "parent_ref": "EP-001", ... } ],
     "tasks": [ { "parent_ref": "Story title", ... } ]
   }
   ```
+- `initiative` is preserved as a backward-compatible alias to the first item in
+  `initiatives`
+- Epics inherit the most recently declared initiative as their `parent_ref`

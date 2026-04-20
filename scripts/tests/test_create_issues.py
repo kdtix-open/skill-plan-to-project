@@ -24,6 +24,61 @@ from scripts.tests.conftest import (
     make_ok,
 )
 
+MULTI_INITIATIVE_HIERARCHY = {
+    "scope": {
+        "title": "Test Project",
+        "description": "A test.",
+        "priority": "P0",
+        "size": "L",
+        "blocking": [],
+    },
+    "initiative": {
+        "title": "Core Initiative",
+        "description": "The primary initiative.",
+        "priority": "P0",
+        "size": "L",
+        "blocking": [],
+    },
+    "initiatives": [
+        {
+            "title": "Core Initiative",
+            "description": "The primary initiative.",
+            "priority": "P0",
+            "size": "L",
+            "blocking": [],
+            "parent_ref": "Test Project",
+        },
+        {
+            "title": "Expansion Initiative",
+            "description": "The secondary initiative.",
+            "priority": "P1",
+            "size": "M",
+            "blocking": [],
+            "parent_ref": "Test Project",
+        },
+    ],
+    "epics": [
+        {
+            "title": "First Epic",
+            "description": "An epic.",
+            "priority": "P0",
+            "size": "M",
+            "blocking": [],
+            "parent_ref": "Core Initiative",
+        },
+        {
+            "title": "Second Epic",
+            "description": "Another epic.",
+            "priority": "P1",
+            "size": "M",
+            "blocking": [],
+            "parent_ref": "Expansion Initiative",
+        },
+    ],
+    "stories": [],
+    "tasks": [],
+}
+
 # ---------------------------------------------------------------------------
 # Task #18: generate_body
 # ---------------------------------------------------------------------------
@@ -306,6 +361,29 @@ class TestCreateAllIssues:
         # scope + initiative + 1 epic + 1 story + 1 task = 5
         assert len(manifest) == 5
 
+    @patch("time.sleep")
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_creates_all_initiatives_in_ordered_manifest(
+        self, mock_run, _mock_sleep, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        mock_run.side_effect = self._mock_run_for_create()
+
+        manifest = create_issues.create_all_issues(
+            MULTI_INITIATIVE_HIERARCHY, {}, "org/repo"
+        )
+
+        initiative_titles = [
+            record["title"]
+            for record in manifest.values()
+            if record["level"] == "initiative"
+        ]
+        assert initiative_titles == [
+            "Core Initiative",
+            "Expansion Initiative",
+        ]
+        assert len(manifest) == 5
+
     @patch("scripts.gh_helpers.subprocess.run")
     def test_manifest_has_required_fields(self, mock_run, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -346,6 +424,79 @@ class TestCreateAllIssues:
         init_idx = next((i for i, lv in enumerate(levels) if "Initiative" in lv), None)
         assert scope_idx is not None and init_idx is not None
         assert scope_idx < init_idx, "Scope must be created before Initiative"
+
+    @patch("time.sleep")
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_creates_both_initiatives_before_epics(
+        self, mock_run, _mock_sleep, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        created_titles: list[str] = []
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "issue create" in joined:
+                try:
+                    idx = list(cmd).index("--title")
+                    created_titles.append(cmd[idx + 1])
+                except (ValueError, IndexError):
+                    pass
+                return make_ok("https://github.com/org/repo/issues/101")
+            if "--jq" in joined:
+                return make_ok(
+                    json.dumps({"nodeId": "N1", "databaseId": 9999, "number": 101})
+                )
+            return make_ok()
+
+        mock_run.side_effect = side_effect
+        create_issues.create_all_issues(MULTI_INITIATIVE_HIERARCHY, {}, "org/repo")
+
+        first_epic_idx = next(
+            (i for i, title in enumerate(created_titles) if title.startswith("Epic:")),
+            None,
+        )
+        initiative_indices = [
+            i
+            for i, title in enumerate(created_titles)
+            if title.startswith("Initiative:")
+        ]
+
+        assert first_epic_idx is not None
+        assert len(initiative_indices) == 2
+        assert all(idx < first_epic_idx for idx in initiative_indices)
+
+    @patch("time.sleep")
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_uses_legacy_initiative_alias_when_initiatives_list_is_empty(
+        self, mock_run, _mock_sleep, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        created_titles: list[str] = []
+        hierarchy = {**MINIMAL_HIERARCHY, "initiatives": []}
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "issue create" in joined:
+                try:
+                    idx = list(cmd).index("--title")
+                    created_titles.append(cmd[idx + 1])
+                except (ValueError, IndexError):
+                    pass
+                return make_ok("https://github.com/org/repo/issues/101")
+            if "--jq" in joined:
+                return make_ok(
+                    json.dumps({"nodeId": "N1", "databaseId": 9999, "number": 101})
+                )
+            return make_ok()
+
+        mock_run.side_effect = side_effect
+        manifest = create_issues.create_all_issues(hierarchy, {}, "org/repo")
+
+        initiative_titles = [
+            title for title in created_titles if title.startswith("Initiative:")
+        ]
+        assert initiative_titles == ["Initiative: Core Initiative"]
+        assert len(manifest) == 5
 
     @patch("scripts.gh_helpers.subprocess.run")
     def test_manifest_json_written_to_disk(self, mock_run, tmp_path, monkeypatch):
@@ -451,9 +602,7 @@ class TestGetIssueIdsRetry:
         manifest = create_issues.create_all_issues(MINIMAL_HIERARCHY, {}, "org/repo")
         assert len(manifest) == 5
         # sleep was called for the 404 retries (at least twice — once per failure)
-        retry_sleeps = [
-            c for c in mock_sleep.call_args_list if c.args[0] != 0.5
-        ]
+        retry_sleeps = [c for c in mock_sleep.call_args_list if c.args[0] != 0.5]
         assert len(retry_sleeps) >= 2
 
     @patch("time.sleep")
@@ -523,4 +672,3 @@ class TestGetIssueIdsRetry:
             return m
 
         return side_effect
-

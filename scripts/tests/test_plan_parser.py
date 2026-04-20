@@ -114,6 +114,32 @@ DOCUMENTED_LEVEL_PLAN = textwrap.dedent("""\
     Size: XS
 """)
 
+MULTI_INITIATIVE_PLAN = textwrap.dedent("""\
+    # Project Scope: PS-001 Multi Initiative
+    Priority: P0
+    Size: L
+
+    ## Initiative: INIT-001 First Initiative
+    Priority: P0
+    Size: M
+
+    ### Epic: EP-001 First Epic
+    Priority: P1
+    Size: S
+
+    ## Initiative: INIT-002 Second Initiative
+    Priority: P1
+    Size: L
+
+    ### Epic: EP-002 Second Epic
+    Priority: P2
+    Size: M
+
+    #### Story: Story under second initiative
+    Priority: P1
+    Size: S
+""")
+
 
 @pytest.fixture
 def tmp_plan(tmp_path: Path) -> callable:
@@ -133,11 +159,11 @@ def tmp_plan(tmp_path: Path) -> callable:
 
 
 class TestParsePlanStructure:
-    def test_returns_dict_with_all_five_keys(self, tmp_plan):
+    def test_returns_dict_with_all_six_keys(self, tmp_plan):
         path = tmp_plan(MINIMAL_PLAN)
         result = create_issues.parse_plan(str(path))
         assert isinstance(result, dict)
-        for key in ("scope", "initiative", "epics", "stories", "tasks"):
+        for key in ("scope", "initiative", "initiatives", "epics", "stories", "tasks"):
             assert key in result, f"parse_plan() result must have key '{key}'"
 
     def test_scope_is_single_dict(self, tmp_plan):
@@ -147,6 +173,11 @@ class TestParsePlanStructure:
     def test_initiative_is_single_dict(self, tmp_plan):
         result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
         assert isinstance(result["initiative"], dict)
+
+    def test_initiatives_is_list(self, tmp_plan):
+        result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
+        assert isinstance(result["initiatives"], list)
+        assert len(result["initiatives"]) == 1
 
     def test_epics_is_list(self, tmp_plan):
         result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
@@ -306,6 +337,17 @@ class TestParsePlanParentRef:
         result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
         assert result["epics"][0]["parent_ref"] is not None
 
+    def test_multiple_initiatives_preserve_first_alias_and_parent_refs(self, tmp_plan):
+        result = create_issues.parse_plan(str(tmp_plan(MULTI_INITIATIVE_PLAN)))
+
+        assert len(result["initiatives"]) == 2
+        assert result["initiative"] == result["initiatives"][0]
+        assert result["initiatives"][0]["parent_ref"] == result["scope"]["title"]
+        assert result["initiatives"][1]["parent_ref"] == result["scope"]["title"]
+        assert result["epics"][0]["parent_ref"] == result["initiatives"][0]["title"]
+        assert result["epics"][1]["parent_ref"] == result["initiatives"][1]["title"]
+        assert result["stories"][0]["parent_ref"] == result["epics"][1]["title"]
+
     def test_story_parent_ref_is_epic(self, tmp_plan):
         result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
         assert result["stories"][0]["parent_ref"] is not None
@@ -362,3 +404,15 @@ class TestParsePlanEdgeCases:
         assert result["stories"][0]["title"] == "Parse documented headings"
         assert len(result["tasks"]) == 1
         assert result["tasks"][0]["title"] == "Support documented task heading"
+
+    def test_multiple_initiatives_all_parsed(self, tmp_plan):
+        result = create_issues.parse_plan(str(tmp_plan(MULTI_INITIATIVE_PLAN)))
+
+        assert [initiative["title"] for initiative in result["initiatives"]] == [
+            "First Initiative",
+            "Second Initiative",
+        ]
+        assert [epic["title"] for epic in result["epics"]] == [
+            "First Epic",
+            "Second Epic",
+        ]
