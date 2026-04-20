@@ -9,6 +9,7 @@ SITE_ROOT = ROOT / "site"
 
 def test_pages_site_files_exist() -> None:
     assert (SITE_ROOT / "index.html").exists()
+    assert (SITE_ROOT / "about.html").exists()
     assert (SITE_ROOT / "styles.css").exists()
     assert (SITE_ROOT / "app.js").exists()
     assert (SITE_ROOT / "assets" / "plugin-icon.png").exists()
@@ -22,6 +23,7 @@ def test_pages_site_content_covers_install_and_support() -> None:
     html = (SITE_ROOT / "index.html").read_text(encoding="utf-8")
 
     assert "skills.projectit.ai" in html
+    assert 'href="./about.html"' in html
     assert "plan-to-project-install --destination home-skill" in html
     assert "plan-to-project-install --destination claude-skill" in html
     assert "plan-to-project-install --destination cursor-rule" in html
@@ -48,6 +50,18 @@ def test_pages_site_content_covers_release_and_docs_links() -> None:
     assert "CHANGELOG.md" in html
     assert "RELEASING.md" in html
     assert "github.com/kdtix-open/skill-plan-to-project/releases" in html
+
+
+def test_about_page_lists_current_skill_and_usage() -> None:
+    html = (SITE_ROOT / "about.html").read_text(encoding="utf-8")
+
+    assert "About the skills catalog" in html
+    assert "Plan to Project" in html
+    assert "Convert a markdown requirements plan into a GitHub Project backlog" in html
+    assert "uvx --from git+https://github.com/kdtix-open/skill-plan-to-project" in html
+    assert "plan-to-project-install --destination home-skill" in html
+    assert "plan-to-project-install --destination claude-skill" in html
+    assert "plan-to-project-install --destination cursor-rule" in html
 
 
 def test_pages_site_script_uses_release_list_endpoint_without_404_fallback() -> None:

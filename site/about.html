@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>skills.projectit.ai | About</title>
+    <meta
+      name="description"
+      content="Learn what lives in the skills.projectit.ai catalog, starting with the KDTIX Open plan-to-project skill and the install surfaces for Codex, Claude Code, and Cursor."
+    />
+    <link rel="icon" href="./assets/plugin-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="masthead">
+        <a class="brand" href="./index.html">
+          <img
+            src="./assets/plugin-icon.png"
+            alt="Plan to Project plugin icon"
+            class="brand-mark"
+          />
+          <span class="brand-copy">
+            <strong>KDTIX Open</strong>
+            <span>plan-to-project</span>
+          </span>
+        </a>
+        <nav class="masthead-links" aria-label="Primary">
+          <a href="./index.html">Home</a>
+          <a href="./about.html" aria-current="page">About</a>
+          <a href="./index.html#install">Install</a>
+          <a href="./index.html#workflow">Workflow</a>
+          <a href="./index.html#release-docs">Release &amp; Docs</a>
+          <a href="./index.html#support">Support</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero hero-about">
+          <div class="hero-copy">
+            <p class="eyebrow">About</p>
+            <h1>About the skills catalog and the workflows it publishes.</h1>
+            <p class="hero-summary">
+              <code>skills.projectit.ai</code> is the public home for KDTIX Open
+              workflow installs. Right now the catalog carries one skill:
+              <strong>Plan to Project</strong>, which turns a markdown requirements
+              plan into a GitHub Project backlog without hand-building the hierarchy
+              yourself.
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="#skills">View available skills</a>
+              <a class="button button-secondary" href="./index.html#install">
+                Go to install options
+              </a>
+            </div>
+            <ul class="signal-list" aria-label="Catalog highlights">
+              <li>Catalog is designed for Codex, Claude Code, and Cursor workflows</li>
+              <li>Each skill includes install guidance, usage patterns, and release docs</li>
+              <li>Current catalog size: 1 published skill</li>
+            </ul>
+          </div>
+
+          <aside class="hero-panel" aria-label="Catalog snapshot">
+            <p class="panel-label">Current catalog</p>
+            <div class="catalog-count">1 skill</div>
+            <p class="panel-note">
+              As more KDTIX Open workflows are published, this page will expand into a
+              broader skills index. For now, <code>plan-to-project</code> is the
+              flagship workflow.
+            </p>
+          </aside>
+        </section>
+
+        <section class="section" id="skills">
+          <div class="section-heading">
+            <p class="eyebrow">Skills</p>
+            <h2>Available skills in the catalog.</h2>
+            <p class="section-copy">
+              The catalog currently contains one production workflow. It is optimized
+              for organizations that want a repeatable path from planning documents to
+              a governed GitHub backlog.
+            </p>
+          </div>
+
+          <div class="catalog-grid">
+            <article class="skill-card">
+              <div class="skill-card-header">
+                <img
+                  src="./assets/plugin-icon.png"
+                  alt="Plan to Project icon"
+                  class="skill-card-icon"
+                />
+                <div>
+                  <p class="card-kicker">Current skill</p>
+                  <h3>Plan to Project</h3>
+                </div>
+              </div>
+              <p class="skill-card-summary">
+                Convert a markdown requirements plan into a GitHub Project backlog with
+                issue types, parent-child structure, blockers, project fields, and
+                queue ordering already wired in.
+              </p>
+              <ul class="skill-pill-list" aria-label="Plan to Project capabilities">
+                <li>Markdown plan parsing</li>
+                <li>GitHub issue creation</li>
+                <li>Project V2 field updates</li>
+                <li>Dependency and queue handling</li>
+              </ul>
+              <div class="skill-card-detail">
+                <div>
+                  <p class="card-kicker">Use it when</p>
+                  <p>
+                    You have a structured Scope → Initiative → Epic → Story → Task plan
+                    and want the backlog generated consistently instead of built by hand.
+                  </p>
+                </div>
+                <div>
+                  <p class="card-kicker">Needs</p>
+                  <p>
+                    A target GitHub org/repo, a Project V2 board, and the KDTIX markdown
+                    planning format documented in the source repository.
+                  </p>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="how-to-use">
+          <div class="section-heading">
+            <p class="eyebrow">How to use it</p>
+            <h2>Install the skill, then invoke it in the surface your team uses.</h2>
+          </div>
+
+          <div class="usage-grid">
+            <article class="install-card">
+              <p class="card-kicker">1. Install</p>
+              <h3>Pick the agent surface</h3>
+              <p>
+                Use the installer destination that matches the environment where you
+                want the workflow to show up.
+              </p>
+              <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination home-skill</code></pre>
+              <button class="copy-button" data-copy-target="home-skill">
+                Copy Codex command
+              </button>
+            </article>
+
+            <article class="install-card">
+              <p class="card-kicker">2. Choose your runtime</p>
+              <h3>Codex, Claude Code, or Cursor</h3>
+              <p>
+                The same source repo installs into multiple agent environments, so teams
+                can standardize the workflow even if contributors prefer different tools.
+              </p>
+              <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination claude-skill</code></pre>
+              <button class="copy-button" data-copy-target="claude-skill">
+                Copy Claude command
+              </button>
+            </article>
+
+            <article class="install-card">
+              <p class="card-kicker">3. Run the workflow</p>
+              <h3>Point the skill at a markdown plan</h3>
+              <p>
+                Once installed, hand the agent your markdown requirements plan and ask
+                it to run <code>plan-to-project</code> against the target GitHub repo and
+                Project V2 board.
+              </p>
+              <pre><code>uvx --from git+https://github.com/kdtix-open/skill-plan-to-project \
+  plan-to-project-install --destination cursor-rule --repo-root /path/to/repo</code></pre>
+              <button class="copy-button" data-copy-target="cursor-rule">
+                Copy Cursor command
+              </button>
+            </article>
+          </div>
+
+          <article class="install-strip">
+            <div>
+              <p class="card-kicker">Prompt pattern</p>
+              <h3>Tell the agent what plan file and GitHub target to use.</h3>
+            </div>
+            <pre><code>Run plan-to-project on ./plans/project-plan.md
+against kdtix-open/my-repo and GitHub Project 8.</code></pre>
+          </article>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <p>
+          Browse the latest release information on the
+          <a href="./index.html#release-docs">homepage release section</a>
+          or inspect source and changelog on
+          <a href="https://github.com/kdtix-open/skill-plan-to-project">GitHub</a>.
+        </p>
+      </footer>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
