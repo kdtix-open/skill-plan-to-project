@@ -422,6 +422,16 @@ class TestReleaseManagementScaffolding:
         )
         assert "--generate-notes" in content
 
+    def test_claude_review_workflow_requires_explicit_enable_flag(self) -> None:
+        workflow = yaml.safe_load(
+            (
+                SKILL_ROOT / ".github" / "workflows" / "claude-code-review.yml"
+            ).read_text()
+        )
+        job = workflow["jobs"]["claude-review"]
+        assert "if" in job, "Claude review workflow must be explicitly gated"
+        assert "CLAUDE_CODE_REVIEW_ENABLED" in job["if"]
+
     def test_pr_template_mentions_release_notes_expectation(self) -> None:
         content = (SKILL_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(
             encoding="utf-8"
