@@ -361,9 +361,10 @@ class TestCreateAllIssues:
         # scope + initiative + 1 epic + 1 story + 1 task = 5
         assert len(manifest) == 5
 
+    @patch("time.sleep")
     @patch("scripts.gh_helpers.subprocess.run")
     def test_creates_all_initiatives_in_ordered_manifest(
-        self, mock_run, tmp_path, monkeypatch
+        self, mock_run, _mock_sleep, tmp_path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         mock_run.side_effect = self._mock_run_for_create()
@@ -424,9 +425,10 @@ class TestCreateAllIssues:
         assert scope_idx is not None and init_idx is not None
         assert scope_idx < init_idx, "Scope must be created before Initiative"
 
+    @patch("time.sleep")
     @patch("scripts.gh_helpers.subprocess.run")
     def test_creates_both_initiatives_before_epics(
-        self, mock_run, tmp_path, monkeypatch
+        self, mock_run, _mock_sleep, tmp_path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         created_titles: list[str] = []
@@ -463,9 +465,10 @@ class TestCreateAllIssues:
         assert len(initiative_indices) == 2
         assert all(idx < first_epic_idx for idx in initiative_indices)
 
+    @patch("time.sleep")
     @patch("scripts.gh_helpers.subprocess.run")
     def test_uses_legacy_initiative_alias_when_initiatives_list_is_empty(
-        self, mock_run, tmp_path, monkeypatch
+        self, mock_run, _mock_sleep, tmp_path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         created_titles: list[str] = []
