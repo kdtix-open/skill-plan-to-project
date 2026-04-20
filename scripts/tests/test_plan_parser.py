@@ -65,6 +65,21 @@ BLOCKING_PLAN = textwrap.dedent("""\
     Size: XS
 """)
 
+BLOCKING_PREFIX_PLAN = textwrap.dedent("""\
+    # Project Scope: PS-001 Blocking Prefix Test
+    Priority: P0
+    Size: M
+
+    ## Initiative: INIT-001 Core
+    Priority: P0
+    Size: M
+
+    ### Epic: EP-001 Parser Epic
+    Priority: P0
+    Size: S
+    Blocking: #147, #160
+""")
+
 DEFAULTS_PLAN = textwrap.dedent("""\
     # Project Scope: PS-001 Defaults Test
 
@@ -260,6 +275,11 @@ class TestParsePlanBlocking:
     def test_no_blocking_gives_empty_list(self, tmp_plan):
         result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
         assert result["scope"]["blocking"] == []
+
+    def test_blocking_keyword_extracted(self, tmp_plan):
+        result = create_issues.parse_plan(str(tmp_plan(BLOCKING_PREFIX_PLAN)))
+        epic = result["epics"][0]
+        assert epic["blocking"] == ["#147", "#160"]
 
     def test_blocks_keyword_extracted(self, tmp_plan):
         result = create_issues.parse_plan(str(tmp_plan(BLOCKING_PLAN)))

@@ -92,6 +92,7 @@ _DEPENDENCIES_SECTION_RE = re.compile(
     r"(?ms)^(?P<heading>#{2,6}\s+Dependencies\s*$)\n*(?P<section>.*?)(?=^#{2,6}\s+\S|\Z)"
 )
 _BLOCKED_BY_LINE_RE = re.compile(r"(?m)^Blocked by:\s*.*(?:\n)?")
+_ISSUE_NUMBER_REF_RE = re.compile(r"^#?(?P<number>\d+)$")
 
 
 def set_blocking_labels(manifest: dict[str, Any], repo: str) -> None:
@@ -99,22 +100,28 @@ def set_blocking_labels(manifest: dict[str, Any], repo: str) -> None:
     by_title: dict[str, dict[str, Any]] = {v["title"]: v for v in manifest.values()}
     blocked_by_number: dict[int, dict[str, Any]] = {}
     blockers_by_blocked: dict[int, list[dict[str, Any]]] = {}
+    issue_cache: dict[int, dict[str, Any] | None] = {}
     pairs: list[tuple[dict, dict]] = []
 
     for record in manifest.values():
         for blocking_ref in record.get("blocking", []):
             # record is the blocker (it declares "Blocks: <ref>"); the
             # referenced issue is the one being blocked.
-            blocked = _find_by_ref(blocking_ref, by_title)
+            blocked = _find_by_ref(blocking_ref, by_title, repo, issue_cache)
             if blocked:
                 blocker = record
                 pairs.append((blocker, blocked))
                 blocked_by_number[blocked["number"]] = blocked
                 blockers_by_blocked.setdefault(blocked["number"], []).append(blocker)
             else:
+                target = (
+                    "manifest or repo"
+                    if _parse_issue_number_ref(blocking_ref)
+                    else "manifest"
+                )
                 print(
                     (
-                        f"[WARN] Blocking ref '{blocking_ref}' not found in manifest "
+                        f"[WARN] Blocking ref '{blocking_ref}' not found in {target} "
                         f"for #{record['number']} {record['title']}"
                     ),
                     file=sys.stderr,
@@ -143,13 +150,27 @@ def set_blocking_labels(manifest: dict[str, Any], repo: str) -> None:
     print(f"[OK] set_blocking_labels: {len(pairs)} blocking pairs processed")
 
 
-def _find_by_ref(ref: str, by_title: dict[str, Any]) -> dict[str, Any] | None:
+def _find_by_ref(
+    ref: str,
+    by_title: dict[str, Any],
+    repo: str = "",
+    issue_cache: dict[int, dict[str, Any] | None] | None = None,
+) -> dict[str, Any] | None:
     """Find a manifest record by reference string.
 
-    Uses exact match first, then falls back to substring matching.
+    Uses GitHub issue-number lookup for #N refs, then exact title match,
+    then falls back to substring matching.
     Warns if multiple substring matches are found.
     """
-    ref_lower = ref.lower().strip()
+    ref_stripped = ref.strip()
+    issue_number = _parse_issue_number_ref(ref_stripped)
+    if issue_number is not None:
+        if not repo:
+            return None
+        cache = issue_cache if issue_cache is not None else {}
+        return _fetch_issue_by_number(repo, issue_number, cache)
+
+    ref_lower = ref_stripped.lower()
 
     # 1. Exact match
     for title, record in by_title.items():
@@ -176,6 +197,55 @@ def _find_by_ref(ref: str, by_title: dict[str, Any]) -> dict[str, Any] | None:
         return candidates[0][1]
 
     return None
+
+
+def _parse_issue_number_ref(ref: str) -> int | None:
+    match = _ISSUE_NUMBER_REF_RE.fullmatch(ref.strip())
+    if not match:
+        return None
+    return int(match.group("number"))
+
+
+def _fetch_issue_by_number(
+    repo: str,
+    issue_number: int,
+    issue_cache: dict[int, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    if issue_number in issue_cache:
+        return issue_cache[issue_number]
+
+    try:
+        result = run_gh(
+            [
+                "gh",
+                "api",
+                "-H",
+                "Accept: application/vnd.github+json",
+                "-H",
+                "X-GitHub-Api-Version: 2022-11-28",
+                f"/repos/{repo}/issues/{issue_number}",
+            ]
+        )
+    except GitHubAPIError as exc:
+        stderr = (exc.stderr or "").lower()
+        if "404" in stderr or "not found" in stderr:
+            issue_cache[issue_number] = None
+            return None
+        raise
+
+    payload = json.loads(result.stdout or "{}")
+    if not isinstance(payload, dict):
+        issue_cache[issue_number] = None
+        return None
+
+    record = {
+        "number": payload["number"],
+        "title": payload["title"],
+        "databaseId": payload["id"],
+        "nodeId": payload.get("node_id"),
+    }
+    issue_cache[issue_number] = record
+    return record
 
 
 def _add_label(repo: str, number: int, label: str) -> None:

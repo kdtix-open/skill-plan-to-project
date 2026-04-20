@@ -19,8 +19,12 @@ Each item should include the following attributes (as bold key-value pairs or bl
 ```
 Priority: P0 | P1 | P2
 Size: XS | S | M | L | XL
-Blocking: #N, #M   (comma-separated issue references, optional)
+Blocks: #123, #160
+Blocking: #123, #160
 ```
+
+`Blocks:` and `Blocking:` are treated as aliases. In both cases, the current
+item is the blocker, and the referenced issues are the issues it blocks.
 
 ## Minimal Example
 
@@ -48,7 +52,12 @@ Size: XS
 - Story and task headers accept both the compact documented depth and the deeper nested depth used by older examples
 - Items without an explicit Priority default to `P1`
 - Items without an explicit Size default to `M`
-- Blocking references are extracted from `Blocking:` lines or `Blocks: #N` patterns
+- Blocking references are extracted from `Blocks:` and `Blocking:` lines
+- `Blocks:` / `Blocking:` means the current item blocks the referenced issue(s)
+- `#123` references are resolved against existing GitHub issue numbers in the
+  target repository
+- Text references are resolved against parsed issue titles in the current
+  manifest
 - The parser returns a dict:
   ```json
   {
