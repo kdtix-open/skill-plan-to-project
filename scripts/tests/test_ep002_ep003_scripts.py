@@ -279,6 +279,93 @@ class TestSetBlockingLabels:
         assert body.count("| #147 | Token lease | Open |") == 1
         assert body.count("| #160 | Worker drain | Open |") == 1
 
+    def test_numeric_issue_ref_uses_github_issue_number_lookup(self):
+        manifest = {
+            "blocker-task": {
+                "number": 41,
+                "nodeId": "I_node_41",
+                "databaseId": 4100,
+                "level": "task",
+                "title": "Parser handoff",
+                "parent_ref": None,
+                "priority": "P0",
+                "size": "S",
+                "blocking": ["#182"],
+            },
+            "local-lookalike": {
+                "number": 77,
+                "nodeId": "I_node_77",
+                "databaseId": 7700,
+                "level": "story",
+                "title": "Sprint 182 planning",
+                "parent_ref": None,
+                "priority": "P1",
+                "size": "M",
+                "blocking": [],
+            },
+        }
+        updated_bodies: list[str] = []
+        relationship_posts: list[str] = []
+        labeled: dict[int, list[str]] = {}
+
+        def run_gh_side_effect(cmd, **kwargs):
+            joined = " ".join(str(part) for part in cmd)
+            if "label list" in joined:
+                return make_ok(json.dumps([{"name": "blocks"}, {"name": "blocked"}]))
+            if joined.endswith("/repos/org/repo/issues/182"):
+                return make_ok(
+                    json.dumps(
+                        {
+                            "number": 182,
+                            "title": "Queue orchestration",
+                            "id": 18200,
+                            "node_id": "I_node_182",
+                        }
+                    )
+                )
+            if "/dependencies/blocked_by" in joined and "--method" not in joined:
+                return make_ok(json.dumps({"dependencies": []}))
+            if "/dependencies/blocked_by" in joined and "--method" in joined:
+                relationship_posts.append(joined)
+            if "add-label" in joined:
+                args = list(cmd)
+                num = int(args[args.index("edit") + 1])
+                lbl = args[args.index("--add-label") + 1]
+                labeled.setdefault(num, []).append(lbl)
+            return make_ok("{}")
+
+        with (
+            patch("scripts.set_relationships.run_gh", side_effect=run_gh_side_effect),
+            patch(
+                "scripts.set_relationships.get_issue_body",
+                return_value=(
+                    "# Story: Queue orchestration\n\n"
+                    "### Dependencies\n\n"
+                    "| Ticket | Description | Status |\n"
+                    "|--------|-------------|--------|\n"
+                    "| None | No blocking dependencies | N/A |\n"
+                ),
+            ),
+            patch(
+                "scripts.set_relationships.update_issue_body",
+                side_effect=lambda repo, number, body: updated_bodies.append(body),
+            ),
+        ):
+            set_relationships.set_blocking_labels(manifest, "org/repo")
+
+        assert len(relationship_posts) == 1
+        assert (
+            "/repos/org/repo/issues/182/dependencies/blocked_by"
+            in relationship_posts[0]
+        )
+        assert "issue_id=4100" in relationship_posts[0]
+        assert "blocks" in labeled.get(41, [])
+        assert "blocked" in labeled.get(182, [])
+        assert "blocked" not in labeled.get(77, [])
+        assert len(updated_bodies) == 1
+        assert "Blocked by: #41" in updated_bodies[0]
+        assert "| #41 | Parser handoff | Open |" in updated_bodies[0]
+
     def test_idempotent_rerun_skips_existing_relationship_and_body_duplicates(self):
         updated_bodies: list[str] = []
         calls: list[str] = []
@@ -452,6 +539,35 @@ class TestSetBlockingLabels:
 
         captured = capsys.readouterr()
         assert "Blocking ref 'NonExistentTarget' not found in manifest" in captured.err
+
+    def test_numeric_issue_ref_warns_when_repo_issue_not_found(self, capsys):
+        manifest = {
+            "story-1": {
+                "number": 10,
+                "nodeId": "N10",
+                "databaseId": 1000,
+                "level": "story",
+                "title": "Blocker",
+                "parent_ref": None,
+                "priority": "P0",
+                "size": "S",
+                "blocking": ["#999"],
+            }
+        }
+
+        def run_gh_side_effect(cmd, **kwargs):
+            joined = " ".join(str(part) for part in cmd)
+            if "label list" in joined:
+                return make_ok("[]")
+            if joined.endswith("/repos/org/repo/issues/999"):
+                raise set_relationships.GitHubAPIError(cmd, 1, "404 Not Found")
+            return make_ok("{}")
+
+        with patch("scripts.set_relationships.run_gh", side_effect=run_gh_side_effect):
+            set_relationships.set_blocking_labels(manifest, "org/repo")
+
+        captured = capsys.readouterr()
+        assert "Blocking ref '#999' not found in manifest or repo" in captured.err
 
     @staticmethod
     def _run_gh_for_blocking_labels():

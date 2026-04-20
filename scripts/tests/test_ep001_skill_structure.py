@@ -236,6 +236,20 @@ class TestReferenceDocuments:
         content = (references_dir / "design-decisions.md").read_text(encoding="utf-8")
         assert "--body-file" in content
 
+    def test_plan_format_documents_blocks_and_blocking_aliases(
+        self, references_dir: Path
+    ) -> None:
+        content = (references_dir / "plan-format.md").read_text(encoding="utf-8")
+        assert "Blocks:" in content
+        assert "Blocking:" in content
+
+    def test_plan_format_documents_blocker_direction_and_numeric_refs(
+        self, references_dir: Path
+    ) -> None:
+        content = (references_dir / "plan-format.md").read_text(encoding="utf-8")
+        assert "#123" in content
+        assert "current item blocks" in content.lower()
+
 
 # ---------------------------------------------------------------------------
 # Story #8: agents/openai.yaml Agents Metadata

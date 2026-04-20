@@ -59,7 +59,10 @@ LEVEL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 PRIORITY_RE = re.compile(r"^Priority:\s*(P[012])", re.IGNORECASE | re.MULTILINE)
 SIZE_RE = re.compile(r"^Size:\s*(XS|S|M|L|XL)\b", re.IGNORECASE | re.MULTILINE)
-BLOCKS_RE = re.compile(r"^Blocks?:\s*(.+)", re.IGNORECASE | re.MULTILINE)
+BLOCKS_RE = re.compile(
+    r"^Block(?:s|ing)?:\s*(.+)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # Directory containing asset templates (resolved relative to repo root)
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
