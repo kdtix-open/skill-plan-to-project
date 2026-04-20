@@ -116,7 +116,7 @@ def set_blocking_labels(manifest: dict[str, Any], repo: str) -> None:
             else:
                 target = (
                     "manifest or repo"
-                    if _parse_issue_number_ref(blocking_ref)
+                    if _parse_issue_number_ref(blocking_ref) is not None
                     else "manifest"
                 )
                 print(

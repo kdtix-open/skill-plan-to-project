@@ -19,8 +19,8 @@ Each item should include the following attributes (as bold key-value pairs or bl
 ```
 Priority: P0 | P1 | P2
 Size: XS | S | M | L | XL
-Blocks: #123, #160
-Blocking: #123, #160
+Blocks: #123, #160      (optional, comma-separated issue references)
+Blocking: #123, #160    (optional alias of Blocks:, same semantics)
 ```
 
 `Blocks:` and `Blocking:` are treated as aliases. In both cases, the current
