@@ -44,13 +44,14 @@ from scripts.tests.conftest import (
 
 
 class TestIntegrationParsePlan:
-    def test_returns_5_bucket_hierarchy(self, tmp_path):
+    def test_returns_6_bucket_hierarchy(self, tmp_path):
         plan_file = tmp_path / "plan.md"
         plan_file.write_text(SAMPLE_PLAN, encoding="utf-8")
         result = create_issues.parse_plan(str(plan_file))
         assert set(result.keys()) == {
             "scope",
             "initiative",
+            "initiatives",
             "epics",
             "stories",
             "tasks",
@@ -62,6 +63,7 @@ class TestIntegrationParsePlan:
         result = create_issues.parse_plan(str(plan_file))
         assert result["scope"] is not None
         assert result["initiative"] is not None
+        assert len(result["initiatives"]) == 1
 
     def test_correct_epic_story_task_counts(self, tmp_path):
         plan_file = tmp_path / "plan.md"
@@ -77,7 +79,7 @@ class TestIntegrationParsePlan:
         result = create_issues.parse_plan(str(plan_file))
         total = (
             (1 if result["scope"] else 0)
-            + (1 if result["initiative"] else 0)
+            + len(result["initiatives"])
             + len(result["epics"])
             + len(result["stories"])
             + len(result["tasks"])
@@ -545,7 +547,7 @@ class TestIntegrationFullPipeline:
         hierarchy = create_issues.parse_plan(str(plan_file))
         total = (
             (1 if hierarchy["scope"] else 0)
-            + (1 if hierarchy["initiative"] else 0)
+            + len(hierarchy["initiatives"])
             + len(hierarchy["epics"])
             + len(hierarchy["stories"])
             + len(hierarchy["tasks"])

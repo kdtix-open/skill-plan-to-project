@@ -73,15 +73,17 @@ _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 
 def parse_plan(filepath: str) -> dict[str, Any]:
-    """Parse a KDTIX markdown plan into a 5-level hierarchy dict.
+    """Parse a KDTIX markdown plan into a hierarchy dict.
 
     Args:
         filepath: Path to the markdown plan file.
 
     Returns:
-        Dict with keys: scope, initiative, epics, stories, tasks.
-        Each item has: title, description, priority, size, blocking,
-        and (for initiative/epics/stories/tasks) parent_ref.
+        Dict with keys: scope, initiative, initiatives, epics, stories, tasks.
+        ``initiative`` is preserved as a backward-compatible alias to the first
+        initiative entry when present. Each item has: title, description,
+        priority, size, blocking, and (for initiative/epics/stories/tasks)
+        parent_ref.
 
     Raises:
         FileNotFoundError: If the file does not exist.
@@ -176,7 +178,8 @@ def _extract_blocking(text: str) -> list[str]:
 def _build_hierarchy(items: list[dict[str, Any]]) -> dict[str, Any]:
     """Assign parent_refs and split items into hierarchy buckets."""
     scope = next((i for i in items if i["level"] == "scope"), None)
-    initiative = next((i for i in items if i["level"] == "initiative"), None)
+    initiatives = [i for i in items if i["level"] == "initiative"]
+    initiative = initiatives[0] if initiatives else None
     epics = [i for i in items if i["level"] == "epic"]
     stories = [i for i in items if i["level"] == "story"]
     tasks = [i for i in items if i["level"] == "task"]
@@ -185,7 +188,7 @@ def _build_hierarchy(items: list[dict[str, Any]]) -> dict[str, Any]:
     # item one level above it in the flat list.
     last: dict[str, str | None] = {
         "scope": scope["title"] if scope else None,
-        "initiative": initiative["title"] if initiative else None,
+        "initiative": None,
         "epic": None,
         "story": None,
     }
@@ -207,6 +210,7 @@ def _build_hierarchy(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "scope": scope,
         "initiative": initiative,
+        "initiatives": initiatives,
         "epics": epics,
         "stories": stories,
         "tasks": tasks,
@@ -712,8 +716,11 @@ def create_all_issues(
 
     if hierarchy.get("scope"):
         ordered.append(("scope", hierarchy["scope"]))
-    if hierarchy.get("initiative"):
-        ordered.append(("initiative", hierarchy["initiative"]))
+    initiatives = hierarchy.get("initiatives")
+    if initiatives is None:
+        initiatives = [hierarchy["initiative"]] if hierarchy.get("initiative") else []
+    for initiative in initiatives:
+        ordered.append(("initiative", initiative))
     for epic in hierarchy.get("epics", []):
         ordered.append(("epic", epic))
     for story in hierarchy.get("stories", []):
@@ -842,7 +849,7 @@ def _cmd_parse(args: argparse.Namespace) -> None:
     hierarchy = parse_plan(args.plan)
     counts = {
         "scope": 1 if hierarchy["scope"] else 0,
-        "initiative": 1 if hierarchy["initiative"] else 0,
+        "initiatives": len(hierarchy.get("initiatives", [])),
         "epics": len(hierarchy["epics"]),
         "stories": len(hierarchy["stories"]),
         "tasks": len(hierarchy["tasks"]),

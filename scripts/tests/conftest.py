@@ -208,6 +208,16 @@ MINIMAL_HIERARCHY = {
         "size": "L",
         "blocking": [],
     },
+    "initiatives": [
+        {
+            "title": "Core Initiative",
+            "description": "The init.",
+            "priority": "P0",
+            "size": "L",
+            "blocking": [],
+            "parent_ref": "Test Project",
+        }
+    ],
     "epics": [
         {
             "title": "First Epic",
