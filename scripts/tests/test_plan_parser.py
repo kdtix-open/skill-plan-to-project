@@ -278,6 +278,10 @@ class TestParsePlanBlocking:
 
 
 class TestParsePlanParentRef:
+    def test_initiative_parent_ref_is_scope(self, tmp_plan):
+        result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
+        assert result["initiative"]["parent_ref"] == result["scope"]["title"]
+
     def test_epic_parent_ref_is_initiative(self, tmp_plan):
         result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
         assert result["epics"][0]["parent_ref"] is not None
