@@ -189,7 +189,10 @@ def _build_hierarchy(items: list[dict[str, Any]]) -> dict[str, Any]:
 
     for item in items:
         level = item["level"]
-        if level == "epic":
+        if level == "initiative":
+            item["parent_ref"] = last["scope"]
+            last["initiative"] = item["title"]
+        elif level == "epic":
             item["parent_ref"] = last["initiative"]
             last["epic"] = item["title"]
         elif level == "story":
