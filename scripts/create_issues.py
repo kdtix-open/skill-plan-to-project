@@ -719,6 +719,8 @@ def create_all_issues(
     initiatives = hierarchy.get("initiatives")
     if initiatives is None:
         initiatives = [hierarchy["initiative"]] if hierarchy.get("initiative") else []
+    elif not initiatives and hierarchy.get("initiative"):
+        initiatives = [hierarchy["initiative"]]
     for initiative in initiatives:
         ordered.append(("initiative", initiative))
     for epic in hierarchy.get("epics", []):

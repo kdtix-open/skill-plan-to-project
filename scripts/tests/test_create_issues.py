@@ -464,6 +464,38 @@ class TestCreateAllIssues:
         assert all(idx < first_epic_idx for idx in initiative_indices)
 
     @patch("scripts.gh_helpers.subprocess.run")
+    def test_uses_legacy_initiative_alias_when_initiatives_list_is_empty(
+        self, mock_run, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        created_titles: list[str] = []
+        hierarchy = {**MINIMAL_HIERARCHY, "initiatives": []}
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "issue create" in joined:
+                try:
+                    idx = list(cmd).index("--title")
+                    created_titles.append(cmd[idx + 1])
+                except (ValueError, IndexError):
+                    pass
+                return make_ok("https://github.com/org/repo/issues/101")
+            if "--jq" in joined:
+                return make_ok(
+                    json.dumps({"nodeId": "N1", "databaseId": 9999, "number": 101})
+                )
+            return make_ok()
+
+        mock_run.side_effect = side_effect
+        manifest = create_issues.create_all_issues(hierarchy, {}, "org/repo")
+
+        initiative_titles = [
+            title for title in created_titles if title.startswith("Initiative:")
+        ]
+        assert initiative_titles == ["Initiative: Core Initiative"]
+        assert len(manifest) == 5
+
+    @patch("scripts.gh_helpers.subprocess.run")
     def test_manifest_json_written_to_disk(self, mock_run, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.side_effect = self._mock_run_for_create()
