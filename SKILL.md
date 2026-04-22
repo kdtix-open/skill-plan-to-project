@@ -213,6 +213,49 @@ execution order. Eligible issues: `Status=Backlog`, no `blocked` label, parent
 
 Prints ordered list to stdout and writes `queue-order.json`.
 
+### Refresh (in-place backlog upgrade) — no new / duplicate issues
+
+```bash
+python scripts/create_issues.py refresh \
+  --plan PLAN_FILE --repo REPO --scope-issue SCOPE_NUMBER --dry-run
+# Review the unified diff output, then:
+python scripts/create_issues.py refresh \
+  --plan PLAN_FILE --repo REPO --scope-issue SCOPE_NUMBER --apply
+```
+
+Patches an existing backlog that was created with an older version of the skill.
+Walks the sub-issue tree rooted at `SCOPE_NUMBER`, matches each existing issue
+to its corresponding plan item by normalized title, re-renders the body with the
+current template + structured-subsection logic, and applies `gh issue edit` when
+the body would change. Defaults to `--dry-run` — you must explicitly pass
+`--apply` to mutate GitHub. The dry-run report (`refresh-report.json`) includes
+a unified diff per would-update so you can review exactly what changes.
+
+### Structured subsection schema (FR #34 Stage 2)
+
+Plans may opt into per-item structured subsections to populate template
+placeholder groups 1:1 (otherwise they fall back to the primary narrative field
+— Vision for scope, Objective for initiative/epic, TL;DR for story, Summary for
+task). Each subsection heading can use any markdown depth (`##` through
+`######`) so long as the text (case-insensitive) matches one of:
+
+| Level | Canonical subsection | Heading aliases | Type |
+|-------|----------------------|-----------------|------|
+| scope | `business_problem` | Business Problem, Business Problem & Current State, Current State | paragraph |
+| scope | `success_criteria` | Success Criteria | bullets |
+| scope | `in_scope_capabilities` | In-Scope Capabilities, In-Scope | bullets or paragraph |
+| scope | `assumptions` | Assumptions | bullets |
+| scope | `out_of_scope` | Out of Scope | bullets |
+| scope | `moscow` | MoSCoW, MoSCoW Classification | nested bullets with `**Must Have**:`, `**Should Have**:`, `**Could Have**:`, `**Won't Have**:` sub-groups |
+| scope | `done_when` | I Know I Am Done When, Done When | bullets |
+| initiative/epic | `objective`, `release_value`, `success_criteria`, `feature_scope`, `assumptions`, `dependencies`, `done_when` | as-named | mixed |
+| epic | `code_areas`, `questions_tech_lead`, `security_compliance` | as-named | mixed |
+| story | `user_story`, `tldr`, `why_this_matters`, `moscow`, `acceptance_criteria`, `constraints`, `implementation_notes`, `security_compliance`, `subtasks_needed` | as-named | mixed |
+| task | `summary`, `context`, `done_when`, `implementation_notes`, `security_compliance` | as-named | mixed |
+
+Subsections are OPTIONAL — when absent, the original template placeholder remains
+and the P0-4 scanner flags it. This lets you adopt the schema one plan at a time.
+
 ## Design Decisions
 
 See [design-decisions.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/design-decisions.md) for the full

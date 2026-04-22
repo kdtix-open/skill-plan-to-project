@@ -973,6 +973,23 @@ class TestRefreshMode:
         # dry_run → update_issue_body NEVER called
         update_mock.assert_not_called()
         assert report["per_issue"][0]["status"] == "would-update"
+        # Stage 2d: report now includes a unified diff (not just char counts)
+        assert "diff" in report["per_issue"][0]
+        diff_text = report["per_issue"][0]["diff"]
+        assert "issue-182-before" in diff_text
+        assert "issue-182-after" in diff_text
+        assert "OLD BODY" in diff_text  # the removed line shows in the diff
+
+    def test_unified_diff_snippet_truncates_long_diffs(self):
+        """Diffs longer than max_lines are capped with a truncation marker."""
+        from scripts import create_issues
+
+        before = "\n".join(f"line {i}" for i in range(500))
+        after = "\n".join(f"changed {i}" for i in range(500))
+        diff = create_issues._unified_diff_snippet(before, after, 42, max_lines=50)
+        assert "[truncated at 50 lines]" in diff
+        # Sanity: the truncated diff is still a valid unified-diff prefix.
+        assert diff.startswith("--- issue-42-before")
 
     def test_refresh_backlog_apply_mode_calls_update(self, mocker, tmp_path):
         """apply mode (dry_run=False) invokes update_issue_body."""
@@ -1786,3 +1803,445 @@ class TestFindByRef:
         }
         result = set_relationships._find_by_ref("Nonexistent", by_title)
         assert result is None
+
+
+# ===========================================================================
+# FR #34 Stage 2: Structured subsection parser + per-level renderers
+# ===========================================================================
+
+
+class TestSubsectionParser:
+    """Parser: extract `#### Section Name` subsections from item bodies."""
+
+    def test_returns_empty_dict_for_blank_body(self):
+        from scripts import create_issues
+
+        assert create_issues._parse_subsections("", "scope") == {}
+
+    def test_stores_leading_text_when_no_subsections_present(self):
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "Just a prose description.\nNo subsections.",
+            "scope",
+        )
+        assert subs == {
+            "_leading_text": "Just a prose description.\nNo subsections.",
+        }
+
+    def test_extracts_single_paragraph_subsection(self):
+        from scripts import create_issues
+
+        body = (
+            "Intro paragraph.\n\n"
+            "#### Business Problem\n\n"
+            "Legacy approach uses N+1 queries and burns 3x the CPU.\n"
+        )
+        subs = create_issues._parse_subsections(body, "scope")
+        assert subs["_leading_text"] == "Intro paragraph."
+        assert (
+            subs["business_problem"]
+            == "Legacy approach uses N+1 queries and burns 3x the CPU."
+        )
+
+    def test_extracts_bullet_subsection_as_list(self):
+        from scripts import create_issues
+
+        body = (
+            "#### Success Criteria\n\n"
+            "- [ ] Metric A hits target\n"
+            "- [ ] Metric B unchanged\n"
+            "- Metric C captured in dashboard\n"
+        )
+        subs = create_issues._parse_subsections(body, "scope")
+        assert subs["success_criteria"] == [
+            "Metric A hits target",
+            "Metric B unchanged",
+            "Metric C captured in dashboard",
+        ]
+
+    def test_extracts_moscow_nested_groups(self):
+        from scripts import create_issues
+
+        body = (
+            "#### MoSCoW\n\n"
+            "**Must Have**:\n"
+            "- Token metering\n"
+            "- Admin dashboard\n\n"
+            "**Should Have**:\n"
+            "- Realtime alerts\n\n"
+            "**Could Have**:\n"
+            "- Slack integration\n\n"
+            "**Won't Have**:\n"
+            "- Per-user throttling (this release)\n"
+        )
+        subs = create_issues._parse_subsections(body, "scope")
+        assert subs["moscow"] == {
+            "must_have": ["Token metering", "Admin dashboard"],
+            "should_have": ["Realtime alerts"],
+            "could_have": ["Slack integration"],
+            "wont_have": ["Per-user throttling (this release)"],
+        }
+
+    def test_heading_aliases_are_case_insensitive(self):
+        from scripts import create_issues
+
+        body = "### BUSINESS PROBLEM & CURRENT STATE\n\nfoo\n"
+        subs = create_issues._parse_subsections(body, "scope")
+        assert subs.get("business_problem") == "foo"
+
+    def test_unrecognized_heading_stays_as_content(self):
+        from scripts import create_issues
+
+        body = "#### Implementation Notes\n\n" "### Approach\n\n" "Do X then Y.\n"
+        subs = create_issues._parse_subsections(body, "task")
+        # Unrecognized `### Approach` is not a new subsection — it remains
+        # inside Implementation Notes as content.
+        assert "### Approach" in subs["implementation_notes"]
+        assert "Do X then Y." in subs["implementation_notes"]
+
+    def test_bullet_variants_all_recognized(self):
+        from scripts import create_issues
+
+        body = (
+            "#### Assumptions\n\n"
+            "- dash bullet\n"
+            "* star bullet\n"
+            "- [ ] checkbox unchecked\n"
+            "- [x] checkbox checked\n"
+        )
+        subs = create_issues._parse_subsections(body, "scope")
+        assert subs["assumptions"] == [
+            "dash bullet",
+            "star bullet",
+            "checkbox unchecked",
+            "checkbox checked",
+        ]
+
+    def test_paragraph_in_bullet_section_wraps_as_single_item(self):
+        from scripts import create_issues
+
+        # If the author wrote prose under a bullet-expected subsection,
+        # the parser should still capture something rather than drop it.
+        body = (
+            "#### Out of Scope\n\n"
+            "Anything involving the legacy API is explicitly out.\n"
+        )
+        subs = create_issues._parse_subsections(body, "scope")
+        assert subs["out_of_scope"] == [
+            "Anything involving the legacy API is explicitly out.",
+        ]
+
+    def test_parses_initiative_specific_keys(self):
+        from scripts import create_issues
+
+        body = (
+            "#### Objective\nWhy it exists.\n\n"
+            "#### Release Value\nWhat ships.\n\n"
+            "#### Artifacts\n- Runbook\n- Dashboard\n"
+        )
+        subs = create_issues._parse_subsections(body, "initiative")
+        assert subs["objective"] == "Why it exists."
+        assert subs["release_value"] == "What ships."
+        assert subs["artifacts"] == ["Runbook", "Dashboard"]
+
+    def test_parses_task_specific_keys(self):
+        from scripts import create_issues
+
+        body = (
+            "#### Summary\nImplement the thing.\n\n"
+            "#### Context\n"
+            "- Parent AC: X\n"
+            "- Preceding: #5\n"
+        )
+        subs = create_issues._parse_subsections(body, "task")
+        assert subs["summary"] == "Implement the thing."
+        assert subs["context"] == ["Parent AC: X", "Preceding: #5"]
+
+
+class TestRenderScopeSubsections:
+    """Renderer: scope template placeholders filled from subsections."""
+
+    def _scope_item(self, body: str) -> dict:
+        from scripts import create_issues
+
+        return {
+            "title": "Test scope",
+            "description": body,
+            "priority": "P1",
+            "size": "M",
+            "subsections": create_issues._parse_subsections(body, "scope"),
+        }
+
+    def test_success_criteria_replaces_placeholder_block(self):
+        from scripts import create_issues
+
+        item = self._scope_item(
+            "#### Success Criteria\n- All providers reach parity\n- CI stays green\n"
+        )
+        body = create_issues.generate_body(item, "scope")
+        assert "[CRITERION 1]" not in body
+        assert "[CRITERION 2]" not in body
+        assert "- [ ] All providers reach parity" in body
+        assert "- [ ] CI stays green" in body
+
+    def test_business_problem_replaces_placeholder(self):
+        from scripts import create_issues
+
+        item = self._scope_item("#### Business Problem\nLegacy path cannot meet SLA.\n")
+        body = create_issues.generate_body(item, "scope")
+        assert "[Describe the problem" not in body
+        assert "Legacy path cannot meet SLA." in body
+
+    def test_assumptions_replaces_placeholder_block(self):
+        from scripts import create_issues
+
+        item = self._scope_item(
+            "#### Assumptions\n- gh CLI is available\n- Tokens are valid\n"
+        )
+        body = create_issues.generate_body(item, "scope")
+        assert "[ASSUMPTION 1]" not in body
+        assert "[ASSUMPTION 2]" not in body
+        assert "- gh CLI is available" in body
+
+    def test_out_of_scope_replaces_placeholder_block(self):
+        from scripts import create_issues
+
+        item = self._scope_item("#### Out of Scope\n- Windows supervisor\n")
+        body = create_issues.generate_body(item, "scope")
+        assert "[ITEM 1]" not in body
+        assert "[ITEM 2]" not in body
+        assert "- Windows supervisor" in body
+
+    def test_moscow_replaces_table_rows(self):
+        from scripts import create_issues
+
+        item = self._scope_item(
+            "#### MoSCoW\n\n"
+            "**Must Have**:\n- Token metering\n\n"
+            "**Should Have**:\n- Alerts\n\n"
+            "**Could Have**:\n- Slack bot\n\n"
+            "**Won't Have**:\n- Throttling\n"
+        )
+        body = create_issues.generate_body(item, "scope")
+        assert "| Must Have | [ITEM] |" not in body
+        assert "| Must Have | Token metering |" in body
+        assert "| Should Have | Alerts |" in body
+        assert "| Could Have | Slack bot |" in body
+        assert "| Won't Have | Throttling |" in body
+
+    def test_done_when_replaces_project_specific_criterion(self):
+        from scripts import create_issues
+
+        item = self._scope_item(
+            "#### I Know I Am Done When\n- Dashboard live in prod\n"
+        )
+        body = create_issues.generate_body(item, "scope")
+        assert "[PROJECT-SPECIFIC CRITERION]" not in body
+        assert "- [ ] Dashboard live in prod" in body
+
+    def test_backward_compat_no_subsections_keeps_placeholders(self):
+        """Plans without subsections get the same behavior as pre-Stage-2."""
+        from scripts import create_issues
+
+        item = self._scope_item("Just a prose description with no subsections.")
+        body = create_issues.generate_body(item, "scope")
+        # Placeholders should still be present (Stage 1 scanner catches them).
+        assert "[CRITERION 1]" in body or "- [ ] [CRITERION" in body
+        assert "[ASSUMPTION 1]" in body or "- [ASSUMPTION" in body
+        # But vision/leading text should be populated from the description.
+        assert "Just a prose description" in body
+
+
+class TestRenderInitiativeSubsections:
+    def _init_item(self, body: str) -> dict:
+        from scripts import create_issues
+
+        return {
+            "title": "Test initiative",
+            "description": body,
+            "priority": "P1",
+            "size": "M",
+            "subsections": create_issues._parse_subsections(body, "initiative"),
+        }
+
+    def test_release_value_replaces_placeholder(self):
+        from scripts import create_issues
+
+        item = self._init_item(
+            "#### Release Value\nTeams can bill per-user for inference.\n"
+        )
+        body = create_issues.generate_body(item, "initiative")
+        assert "Teams can bill per-user for inference." in body
+        assert "[What becomes possible after this initiative ships" not in body
+
+    def test_artifacts_replaces_placeholder(self):
+        from scripts import create_issues
+
+        item = self._init_item("#### Artifacts\n- Runbook\n- Dashboard\n")
+        body = create_issues.generate_body(item, "initiative")
+        assert "[ARTIFACT]" not in body
+        assert "- [ ] Runbook" in body
+        assert "- [ ] Dashboard" in body
+
+
+class TestRenderEpicSubsections:
+    def _epic_item(self, body: str) -> dict:
+        from scripts import create_issues
+
+        return {
+            "title": "Test epic",
+            "description": body,
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test initiative",
+            "subsections": create_issues._parse_subsections(body, "epic"),
+        }
+
+    def test_release_value_uses_epic_specific_placeholder(self):
+        from scripts import create_issues
+
+        item = self._epic_item("#### Release Value\nNew dashboard page.\n")
+        body = create_issues.generate_body(item, "epic")
+        assert "New dashboard page." in body
+        assert "[What becomes possible after this epic ships" not in body
+
+    def test_questions_for_tech_lead_replaces_placeholder(self):
+        from scripts import create_issues
+
+        item = self._epic_item(
+            "#### Questions for Tech Lead\n- Sync or async cache?\n- HTTP/2?\n"
+        )
+        body = create_issues.generate_body(item, "epic")
+        assert "- [QUESTION]" not in body
+        assert "- Sync or async cache?" in body
+
+
+class TestRenderStorySubsections:
+    def _story_item(self, body: str) -> dict:
+        from scripts import create_issues
+
+        return {
+            "title": "Test story",
+            "description": body,
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": create_issues._parse_subsections(body, "story"),
+        }
+
+    def test_user_story_block_replaces_as_a_template(self):
+        from scripts import create_issues
+
+        item = self._story_item(
+            "#### User Story\n"
+            "As a finance lead,\n"
+            "I want monthly cost reports,\n"
+            "So that I can chargeback.\n"
+        )
+        body = create_issues.generate_body(item, "story")
+        assert "As a [ROLE]" not in body
+        assert "As a finance lead" in body
+
+    def test_why_this_matters_replaces_placeholder(self):
+        from scripts import create_issues
+
+        item = self._story_item("#### Why This Matters\nCosts are untracked today.\n")
+        body = create_issues.generate_body(item, "story")
+        assert "[Why this story is needed" not in body
+        assert "Costs are untracked today." in body
+
+    def test_constraints_replaces_placeholder(self):
+        from scripts import create_issues
+
+        item = self._story_item("#### Constraints\n- Must ship before Q2\n")
+        body = create_issues.generate_body(item, "story")
+        assert "- [CONSTRAINT]" not in body
+        assert "- Must ship before Q2" in body
+
+
+class TestRenderTaskSubsections:
+    def _task_item(self, body: str) -> dict:
+        from scripts import create_issues
+
+        return {
+            "title": "Test task",
+            "description": body,
+            "priority": "P1",
+            "size": "S",
+            "parent_ref": "Test story",
+            "subsections": create_issues._parse_subsections(body, "task"),
+        }
+
+    def test_context_replaces_placeholder_block(self):
+        from scripts import create_issues
+
+        item = self._task_item(
+            "#### Context\n"
+            '- Parent AC: "cost report generates on schedule"\n'
+            "- Preceding: #12\n"
+            "- Blocks: #15\n"
+        )
+        body = create_issues.generate_body(item, "task")
+        assert "[The acceptance criterion this task satisfies]" not in body
+        assert '- Parent AC: "cost report generates on schedule"' in body
+
+    def test_implementation_notes_replaces_placeholder(self):
+        from scripts import create_issues
+
+        item = self._task_item(
+            "#### Implementation Notes\n\n### Approach\n" "Use regex then pandas.\n"
+        )
+        body = create_issues.generate_body(item, "task")
+        assert "[How to implement this" not in body
+        assert "Use regex then pandas." in body
+
+
+class TestEndToEndPlanRender:
+    """End-to-end: parse a full structured plan and verify no placeholder leaks."""
+
+    def test_fully_structured_plan_has_no_placeholder_strings(self, tmp_path):
+        """Given a plan with every subsection populated, the rendered
+        scope body should contain no unreplaced bracket placeholders.
+        """
+        from scripts import compliance_check, create_issues
+
+        plan_body = (
+            "# Project Scope: PS-TEST — End-to-end verification\n\n"
+            "Priority: P0\nSize: M\n\n"
+            "The end state is a fully-populated scope body with zero placeholders.\n\n"
+            "#### Business Problem\n\n"
+            "Today, scopes ship with template placeholder strings.\n\n"
+            "#### Success Criteria\n\n"
+            "- All subsections populate from plan\n"
+            "- Scanner reports zero P0-4 gaps\n\n"
+            "#### In-Scope Capabilities\n\n"
+            "- Subsection parser\n"
+            "- Per-level renderers\n\n"
+            "#### Assumptions\n\n"
+            "- gh CLI is available\n"
+            "- Tokens are valid\n\n"
+            "#### Out of Scope\n\n"
+            "- Windows supervisor\n\n"
+            "#### MoSCoW\n\n"
+            "**Must Have**:\n- Token metering\n\n"
+            "**Should Have**:\n- Realtime alerts\n\n"
+            "**Could Have**:\n- Slack bot\n\n"
+            "**Won't Have**:\n- Per-user throttling\n\n"
+            "#### I Know I Am Done When\n\n"
+            "- Scope renders with no placeholders\n"
+        )
+        plan_path = tmp_path / "plan.md"
+        plan_path.write_text(plan_body, encoding="utf-8")
+
+        hierarchy = create_issues.parse_plan(str(plan_path))
+        scope = hierarchy["scope"]
+        body = create_issues.generate_body(scope, "scope")
+
+        # Per Stage 1: the P0-4 scanner must not flag this as incomplete
+        gaps = compliance_check.check_issue(1, scope["title"], body, "scope")
+        p0_4 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert not p0_4, (
+            f"Unexpected placeholder gaps after full render: "
+            f"{[g.get('placeholders') for g in p0_4]}"
+        )
