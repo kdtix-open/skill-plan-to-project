@@ -1792,6 +1792,70 @@ def _flatten_parsed_hierarchy(hierarchy: dict[str, Any]) -> dict[str, dict[str, 
     return items_by_title
 
 
+def _preserve_outside_template_zone(
+    existing_body: str, new_body: str
+) -> tuple[str, dict[str, str]]:
+    """Merge operator-authored prefix/suffix from `existing_body` into `new_body`.
+
+    The skill's templates define a canonical rendered body that starts with
+    `# <Level>: <Title>` and (for scope) ends with a `_Created: ... | Owner: ..._`
+    footer.  Anything OUTSIDE that zone in the existing body — HTML comments,
+    sequence-order blockquotes, trailing signatures, custom tooling markers —
+    is operator-authored content the skill does not own.
+
+    This function:
+     1. Extracts the prefix (lines before the first `# ` heading) from
+        `existing_body`.
+     2. Extracts the suffix (lines after the last italic `_Created: ..._`
+        footer, if any) from `existing_body`.
+     3. Prepends the prefix + appends the suffix to `new_body`, BUT only
+        when `new_body` does not already contain that exact content
+        (idempotent: re-runs don't duplicate the prefix).
+
+    Returns `(merged_body, {"prefix": <extracted>, "suffix": <extracted>})`.
+    The returned dict lets callers log/report what was preserved.
+    """
+    prefix = ""
+    suffix = ""
+
+    # --- prefix: content before the first top-level heading -----------------
+    # Using re.MULTILINE so `^# ` matches at the start of any line.
+    existing_heading_match = re.search(r"^# [^\n]+$", existing_body, re.MULTILINE)
+    if existing_heading_match:
+        idx = existing_heading_match.start()
+        candidate_prefix = existing_body[:idx].rstrip("\n")
+        if candidate_prefix.strip():
+            prefix = candidate_prefix
+
+    # --- suffix: content after the last `_Created: ... | Owner: ..._` footer
+    # Using a forgiving pattern: italic span that starts with `_Created:` and
+    # ends with `_`.  Only matches when present; scope templates have it,
+    # other levels typically don't.
+    created_footer = re.compile(r"^_Created:[^\n]*_$", re.MULTILINE)
+    existing_footers = list(created_footer.finditer(existing_body))
+    if existing_footers:
+        last = existing_footers[-1]
+        candidate_suffix = existing_body[last.end() :].lstrip("\n")
+        if candidate_suffix.strip():
+            suffix = candidate_suffix
+
+    # --- merge (idempotent) --------------------------------------------------
+    merged = new_body
+    if prefix and prefix not in merged:
+        merged = f"{prefix}\n\n{merged}"
+    if suffix and suffix not in merged:
+        # Append after the footer of the NEW body if it has one; else just
+        # at the end.
+        new_footer_match = list(created_footer.finditer(merged))
+        if new_footer_match:
+            insert_at = new_footer_match[-1].end()
+            merged = merged[:insert_at].rstrip() + "\n\n" + suffix.strip() + "\n"
+        else:
+            merged = merged.rstrip() + "\n\n" + suffix.strip() + "\n"
+
+    return merged, {"prefix": prefix, "suffix": suffix}
+
+
 def _unified_diff_snippet(
     before: str, after: str, issue_number: int, max_lines: int = 200
 ) -> str:
@@ -1920,6 +1984,21 @@ def refresh_backlog(
             continue
 
         new_body = generate_body(item, level)
+
+        # Stage 2.5 (FR #34): preserve operator-authored content that lives
+        # OUTSIDE the template zone — anything before the first `# Heading`
+        # and anything after the closing `_Created: ..._` footer.  This
+        # protects tooling markers (HTML comments), sequence-order
+        # blockquotes, signatures, and other annotations that the skill's
+        # templates don't own + shouldn't clobber on refresh.
+        new_body, preserved = _preserve_outside_template_zone(current_body, new_body)
+        if preserved["prefix"] or preserved["suffix"]:
+            per_issue_record["preserved"] = {
+                "prefix_lines": preserved["prefix"].count("\n")
+                + (1 if preserved["prefix"] else 0),
+                "suffix_lines": preserved["suffix"].count("\n")
+                + (1 if preserved["suffix"] else 0),
+            }
 
         if current_body.strip() == new_body.strip():
             per_issue_record["status"] = "unchanged"
