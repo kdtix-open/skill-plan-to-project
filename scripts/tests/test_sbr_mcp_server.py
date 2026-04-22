@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import patch
-
 import pytest
 
 from scripts.sbr import mcp_server
@@ -14,7 +11,8 @@ class TestMainGracefulFallback:
     def test_main_without_mcp_sdk_prints_remediation(self, capsys, monkeypatch):
         """When `mcp` SDK isn't installed, main() returns non-zero + prints hint."""
         monkeypatch.setattr(mcp_server, "FastMCP", None)
-        rc = mcp_server.main()
+        # Pass explicit argv so argparse doesn't inherit pytest's sys.argv.
+        rc = mcp_server.main(argv=[])
         assert rc == 2
         err = capsys.readouterr().err
         assert "mcp" in err.lower() and "install" in err.lower()
@@ -33,6 +31,7 @@ class TestBuildServerRegistersTools:
         # FastMCP uses _tool_manager.list_tools() in newer versions
         try:
             import asyncio
+
             tools = asyncio.run(server._tool_manager.list_tools())
             tool_names = {t.name for t in tools}
         except (AttributeError, Exception):
@@ -54,6 +53,4 @@ class TestBuildServerRegistersTools:
             "sbr_write_back",
         }
         # At least the 10 canonical tools should be registered
-        assert expected.issubset(tool_names), (
-            f"missing tools: {expected - tool_names}"
-        )
+        assert expected.issubset(tool_names), f"missing tools: {expected - tool_names}"

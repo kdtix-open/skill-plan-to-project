@@ -4,8 +4,8 @@ Primary operator interface for Stage 1 MVP.  Claude App (with Voice),
 Claude CLI, Codex, Cursor, and VS Code all drive review via the same
 tool surface.
 
-10 canonical tools mirror the CLI subcommands:
-  sbr_start_session      / sbr_status
+11 canonical tools mirror the CLI subcommands:
+  sbr_start_session      / sbr_session_status
   sbr_next_subsection    / sbr_current_subsection_verbatim
   sbr_approve            / sbr_improve             / sbr_skip
   sbr_pause              / sbr_resume              / sbr_write_back
@@ -14,27 +14,98 @@ tool surface.
 Uses the `mcp` Python SDK (https://github.com/modelcontextprotocol/python-sdk).
 If `mcp` is not available at import time, the module prints a clear
 remediation hint + exits when `main()` is called.
+
+## Transports (Story #393 — Stage 1.5 Voice Pilot)
+
+- `stdio` (default): Claude App / Claude CLI local path; no auth needed (local
+  trust).  `sbr-mcp-server` with no flags runs in this mode.
+- `streamable-http`: hosted consumption (web browser calling from
+  `dev.projectit.ai/tools/sbr`).  Requires `--auth-token` (Bearer).  Uses
+  FastMCP's streamable-http transport on `/mcp` by default.
+- `sse`: older SSE transport; also requires `--auth-token`.  Kept for
+  backwards compatibility with MCP clients that don't yet support
+  streamable-http.
+
+Bearer-token auth uses `hmac.compare_digest` for constant-time comparison to
+prevent timing side-channels on token validation.  The expected token is
+typically a GitHub App installation token (1-hour TTL, rotated by cron);
+`sbr-mcp-server` itself doesn't mint tokens — upstream infra (cron +
+`mint_app_token.py`) is responsible for populating the env var that
+`--auth-token` reads.
 """
 
 from __future__ import annotations
 
+import argparse
+import hmac
 import sys
 from typing import Any
 
 try:
+    from mcp.server.auth.provider import AccessToken, TokenVerifier
+    from mcp.server.auth.settings import AuthSettings
     from mcp.server.fastmcp import FastMCP
 except ImportError:  # pragma: no cover — import-time graceful failure
+    AccessToken = None  # type: ignore[assignment, misc]
+    AuthSettings = None  # type: ignore[assignment, misc]
     FastMCP = None  # type: ignore[assignment]
+    TokenVerifier = object  # type: ignore[assignment, misc]
 
 from scripts.sbr.api import SessionManager, WriteBacker
 
 
-def _build_server() -> FastMCP:  # type: ignore[name-defined]
-    """Construct the FastMCP server + register the 10 canonical tools.
+class BearerTokenVerifier:
+    """Constant-time Bearer token verifier for hosted HTTP/SSE transport.
+
+    Implements the MCP SDK's `TokenVerifier` protocol.  Only accepts tokens
+    that match `expected_token` exactly (compared via `hmac.compare_digest`
+    to prevent timing side-channels).
+
+    An empty `expected_token` rejects every request — defense-in-depth so a
+    misconfigured deployment doesn't accidentally open an anonymous
+    endpoint.
+    """
+
+    def __init__(self, expected_token: str) -> None:
+        self.expected_token = expected_token
+
+    async def verify_token(self, token: str) -> Any:
+        """Protocol: return AccessToken on success, None on failure."""
+        if not self.expected_token:
+            return None
+        if not token:
+            return None
+        if not hmac.compare_digest(token, self.expected_token):
+            return None
+        if AccessToken is None:  # pragma: no cover — stdio-only install
+            return None
+        return AccessToken(
+            token=token,
+            client_id="sbr-hosted-consumer",
+            scopes=["sbr:review"],
+            expires_at=None,
+            resource=None,
+        )
+
+
+def _build_server(
+    auth_token: str | None = None,
+    resource_server_url: str = "http://127.0.0.1:3456/",
+) -> FastMCP:  # type: ignore[name-defined]
+    """Construct the FastMCP server + register the 11 canonical tools.
 
     Delegates every tool to `scripts.sbr.api` primitives; no business logic
     lives in the MCP layer.  Sticky-session support uses the same
     `~/.sbr/current-session.txt` file as the CLI.
+
+    Args:
+        auth_token: If provided, installs a BearerTokenVerifier that accepts
+            only this exact token for hosted HTTP/SSE transport.  None for
+            stdio (local trust; no auth).
+        resource_server_url: Public URL of this MCP server — included in
+            AuthSettings for OAuth protected-resource metadata.  Defaults
+            to localhost for local dev; override to the hosted URL in
+            production (e.g. "https://dev.projectit.ai/mcp/sbr/").
     """
     if FastMCP is None:
         raise RuntimeError(
@@ -42,7 +113,21 @@ def _build_server() -> FastMCP:  # type: ignore[name-defined]
             "  pip install mcp  (see https://github.com/modelcontextprotocol/python-sdk)"
         )
 
-    mcp = FastMCP("sbr")
+    kwargs: dict[str, Any] = {}
+    if auth_token:
+        kwargs["token_verifier"] = BearerTokenVerifier(expected_token=auth_token)
+        # FastMCP requires AuthSettings when a token_verifier is present.
+        # For simple Bearer flows (non-OAuth), we pass placeholder URLs —
+        # no OAuth discovery / DCR is performed because we don't provide an
+        # auth_server_provider.  The resource_server_url matches this
+        # server's public URL so clients know where the resource lives.
+        kwargs["auth"] = AuthSettings(
+            issuer_url=resource_server_url,
+            resource_server_url=resource_server_url,
+            required_scopes=["sbr:review"],
+        )
+
+    mcp = FastMCP("sbr", **kwargs)
     mgr = SessionManager()
 
     @mcp.tool()
@@ -201,19 +286,97 @@ def _build_server() -> FastMCP:  # type: ignore[name-defined]
     return mcp
 
 
-def main() -> int:
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="sbr-mcp-server",
+        description=(
+            "SBR MCP server — stdio (default, for Claude App) or "
+            "streamable-http/sse (for hosted consumers like "
+            "dev.projectit.ai/tools/sbr)."
+        ),
+    )
+    parser.add_argument(
+        "--transport",
+        default="stdio",
+        choices=("stdio", "streamable-http", "sse"),
+        help=(
+            "Transport mode.  stdio = Claude App + local CLIs (default).  "
+            "streamable-http = hosted web consumers.  sse = legacy HTTP "
+            "streaming.  HTTP modes require --auth-token."
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=3456,
+        help="Port for HTTP/SSE transports (ignored for stdio).  Default: 3456.",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind address for HTTP/SSE transports (default: 127.0.0.1 — "
+            "bind 0.0.0.0 only behind a reverse proxy)."
+        ),
+    )
+    parser.add_argument(
+        "--auth-token",
+        default=None,
+        help=(
+            "Bearer token for HTTP/SSE transports.  Typically a GitHub App "
+            "installation token rotated by cron.  REQUIRED for HTTP/SSE; "
+            "ignored (and unused) for stdio."
+        ),
+    )
+    parser.add_argument(
+        "--mount-path",
+        default="/",
+        help="Mount path for HTTP/SSE transports.  Default: /",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
     """Entry point for the `sbr-mcp-server` console script.
 
-    Starts the FastMCP server in stdio mode (the default expected by
-    Claude App + most MCP clients).  HTTP transport can be added in
-    Stage 2 if needed.
+    Parses CLI args + dispatches to the correct FastMCP transport.  stdio
+    runs locally for Claude App; streamable-http + sse serve hosted
+    consumers with Bearer-token auth.
     """
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+
+    # HTTP/SSE modes MUST have an auth token — refuse to open an anonymous
+    # network endpoint by mistake.
+    if args.transport in ("streamable-http", "sse") and not args.auth_token:
+        print(
+            f"[sbr-mcp-server] --auth-token is required for --transport "
+            f"{args.transport}.\n"
+            f"  Missing: mint an App installation token + pass it explicitly.\n"
+            f"  Example: sbr-mcp-server --transport streamable-http "
+            f"--auth-token $GH_TOKEN",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
-        mcp = _build_server()
+        auth_token = args.auth_token if args.transport != "stdio" else None
+        mcp = _build_server(auth_token=auth_token)
     except RuntimeError as exc:
         print(f"[sbr-mcp-server] {exc}", file=sys.stderr)
         return 2
-    mcp.run()
+
+    if args.transport == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        # FastMCP reads host/port/mount_path from init kwargs for HTTP modes;
+        # _build_server doesn't set them, so we override at run-time via the
+        # FastMCP settings object.
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        if args.mount_path != "/":
+            mcp.settings.mount_path = args.mount_path
+        mcp.run(transport=args.transport)
     return 0
 
 
