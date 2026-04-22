@@ -316,6 +316,28 @@ sequenceDiagram
 Backward compatibility: plans without diagram subsections render identically to
 pre-FR-#40 bodies (the diagram hook section is elided cleanly).
 
+#### Deeper validation (optional) — companion `mermaid` skill
+
+`plan-to-project` ships a fast, in-process directive check (P0-5) that catches
+the most common mistake — operator pastes prose into a `\`\`\`mermaid` block.
+It does NOT parse, render, or visually inspect the diagram because we don't
+want `plan-to-project` to require `mmdc` / Playwright / a browser in
+non-interactive CI contexts.
+
+Operators who want stronger validation should run a companion `mermaid` skill
+on the plan file **before** `/plan-to-project`:
+
+- A Codex user-skill at `~/.codex/skills/mermaid/` provides a closed-loop
+  pipeline (`scripts/iterate_mermaid.py`) that validates syntax via `mmdc`,
+  renders both light + dark variants, screenshots them via Playwright, and
+  scores clipping / overlap / contrast — with optional LLM-driven repair.
+- The MCP tool `validate_and_render_mermaid_diagram` (when available in the
+  host agent) performs a one-shot parse + render check.
+
+Use either before running plan-to-project if you want to catch render-time
+failures (unclosed brackets, invalid arrow types, overlapping labels) that
+the directive check cannot see.
+
 ## Design Decisions
 
 See [design-decisions.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/design-decisions.md) for the full
