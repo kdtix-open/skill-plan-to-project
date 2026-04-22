@@ -22,6 +22,8 @@
 
 ---
 
+[DIAGRAMS_HOOK_INITIATIVE]
+
 ### Success Criteria
 
 - [ ] [CRITERION 1]

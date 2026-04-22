@@ -21,6 +21,8 @@ So that [OUTCOME].
 
 [Why this story is needed and what breaks without it — 2-3 sentences]
 
+[DIAGRAMS_HOOK_STORY]
+
 ### Assumptions
 
 - **Roles**: [WHO uses the output of this story]
