@@ -900,6 +900,37 @@ class TestWalkExistingHierarchy:
 class TestRefreshMode:
     """FR #34 Stage 5: refresh existing backlog in-place without duplicates."""
 
+    def test_normalize_title_strips_markdown_markers(self):
+        """Backticks, bold, italic in plan titles must match plain-text GitHub titles."""
+        from scripts import create_issues
+
+        plan_title = (
+            "Story: Self-Heal R-10 — Bridge credential allow-list must "
+            "accept generic `GITHUB_TOKEN` / `GH_TOKEN`"
+        )
+        gh_title = (
+            "Story: Self-Heal R-10 — Bridge credential allow-list must "
+            "accept generic GITHUB_TOKEN / GH_TOKEN"
+        )
+        assert create_issues._normalize_title_for_match(
+            plan_title
+        ) == create_issues._normalize_title_for_match(gh_title)
+
+    def test_normalize_title_strips_bold_and_italics(self):
+        from scripts import create_issues
+
+        assert create_issues._normalize_title_for_match(
+            "Story: **Critical** auth fix"
+        ) == create_issues._normalize_title_for_match("Story: Critical auth fix")
+
+    def test_normalize_title_collapses_whitespace(self):
+        from scripts import create_issues
+
+        assert (
+            create_issues._normalize_title_for_match("Story:  double  space  inside")
+            == "double space inside"
+        )
+
     def test_flatten_parsed_hierarchy_normalizes_prefixes(self):
         from scripts import create_issues
 

@@ -2009,6 +2009,47 @@ def _walk_existing_hierarchy(
     return results
 
 
+_LEVEL_PREFIXES_FOR_NORMALIZE = (
+    "Project Scope:",
+    "Scope:",
+    "Initiative:",
+    "Epic:",
+    "Story:",
+    "User Story:",
+    "Task:",
+)
+
+# Markdown markers we strip before comparing titles so plan-authored
+# titles with backticks / bold / italics still match GitHub-rendered
+# plain-text titles.  Stars for bold/italic, backticks for inline code.
+_TITLE_MARKDOWN_RE = re.compile(r"[`*_]+")
+
+
+def _normalize_title_for_match(title: str) -> str:
+    """Canonicalize a title for cross-source matching.
+
+    Applied symmetrically to plan-parsed titles + existing-issue titles so
+    the refresh walker can correlate them despite differences in markdown
+    formatting.  Current normalizations:
+
+    - strip leading level prefixes (`Project Scope: `, `Initiative: `, etc.)
+    - strip markdown markers: backticks (`` ` ``), bold/italic markers (`*`, `_`)
+    - collapse internal whitespace
+    - lowercase + trim
+
+    Safe for symmetric use: both sides of the comparison MUST call this
+    function for the result to match.
+    """
+    t = title.strip()
+    for prefix in _LEVEL_PREFIXES_FOR_NORMALIZE:
+        if t.lower().startswith(prefix.lower()):
+            t = t[len(prefix) :].strip()
+            break
+    t = _TITLE_MARKDOWN_RE.sub("", t)
+    t = re.sub(r"\s+", " ", t)
+    return t.lower().strip()
+
+
 def _flatten_parsed_hierarchy(hierarchy: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Flatten parse_plan() output into a {normalized_title: item} map.
 
@@ -2018,22 +2059,7 @@ def _flatten_parsed_hierarchy(hierarchy: dict[str, Any]) -> dict[str, dict[str, 
     items_by_title: dict[str, dict[str, Any]] = {}
 
     def _normalize(title: str) -> str:
-        # Strip common prefixes that may or may not be present in GH titles:
-        # "Project Scope: ", "Initiative: ", "Epic: ", "Story: ", "Task: "
-        t = title.strip()
-        for prefix in [
-            "Project Scope:",
-            "Scope:",
-            "Initiative:",
-            "Epic:",
-            "Story:",
-            "User Story:",
-            "Task:",
-        ]:
-            if t.lower().startswith(prefix.lower()):
-                t = t[len(prefix) :].strip()
-                break
-        return t.lower().strip()
+        return _normalize_title_for_match(title)
 
     def _register(item: dict[str, Any], level: str) -> None:
         norm = _normalize(item.get("title", ""))
@@ -2200,21 +2226,9 @@ def refresh_backlog(
         number = entry["number"]
         title = entry["title"]
         level = entry["level"]
-        # Normalize existing title same way
-        norm = title.strip()
-        for prefix in [
-            "Project Scope:",
-            "Scope:",
-            "Initiative:",
-            "Epic:",
-            "Story:",
-            "User Story:",
-            "Task:",
-        ]:
-            if norm.lower().startswith(prefix.lower()):
-                norm = norm[len(prefix) :].strip()
-                break
-        norm = norm.lower().strip()
+        # Normalize existing title same way as the plan's parsed titles so
+        # backticks / bold / inline-code markers don't block matching.
+        norm = _normalize_title_for_match(title)
 
         item = items_by_title.get(norm)
         per_issue_record: dict[str, Any] = {
