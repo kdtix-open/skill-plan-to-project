@@ -897,6 +897,48 @@ class TestWalkExistingHierarchy:
         mock_run.assert_not_called()
 
 
+class TestFR46AutoCreateIssueTypes:
+    """FR #46: preflight --auto-create-issue-types."""
+
+    def test_auto_create_dry_run_prints_without_mutating(self, capsys):
+        from scripts import create_issues
+
+        with patch("scripts.gh_helpers.subprocess.run") as mock_run:
+            mock_run.return_value = make_ok("{}")
+            names = create_issues._auto_create_missing_issue_types(
+                "kdtix-open", ["Project Scope", "Epic"], dry_run=True
+            )
+            # No GraphQL calls made when dry_run=True
+            assert mock_run.call_count == 0
+        captured = capsys.readouterr()
+        assert "WOULD CREATE: 'Project Scope'" in captured.out
+        assert "WOULD CREATE: 'Epic'" in captured.out
+        assert names == ["Project Scope", "Epic"]
+
+    def test_auto_create_real_resolves_org_id_and_creates(self):
+        from scripts import create_issues
+
+        calls = []
+
+        def side_effect(cmd, **kwargs):
+            calls.append(cmd)
+            joined = " ".join(cmd)
+            if "_ORG_NODE_ID_QUERY" in joined or (
+                "organization(login" in joined and "issueTypes" not in joined
+            ):
+                return make_ok('{"data": {"organization": {"id": "ORG_NODE_ID_123"}}}')
+            # Must be createIssueType mutation
+            return make_ok('{"data": {"createIssueType": {"issueType": {"id": "T1"}}}}')
+
+        with patch("scripts.gh_helpers.subprocess.run", side_effect=side_effect):
+            names = create_issues._auto_create_missing_issue_types(
+                "kdtix-open", ["Task"], dry_run=False
+            )
+        assert names == ["Task"]
+        # Org-id query + 1 mutation expected
+        assert len(calls) >= 2
+
+
 class TestFR45RequiredSubsectionGate:
     """FR #45 required subsection schema gate + --allow-shallow-subsections override."""
 
