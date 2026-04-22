@@ -897,6 +897,120 @@ class TestWalkExistingHierarchy:
         mock_run.assert_not_called()
 
 
+class TestFR52TableSubsectionNormalization:
+    """FR #52: full markdown tables in subsections shouldn't duplicate headers."""
+
+    def test_normalize_strips_header_and_delimiter(self):
+        from scripts.create_issues import _normalize_table_subsection_content
+
+        full_table = (
+            "| # | Feature/Capability | What It Includes | What It Enables |\n"
+            "|---|---|---|---|\n"
+            "| 1 | SBR API | Session manager | Canonical logic |\n"
+            "| 2 | SBR CLI | argparse | CI integration |\n"
+        )
+        result = _normalize_table_subsection_content(full_table)
+        assert "Feature/Capability" not in result, "header should be stripped"
+        assert "SBR API" in result
+        assert "SBR CLI" in result
+
+    def test_no_table_header_leaves_content_unchanged(self):
+        from scripts.create_issues import _normalize_table_subsection_content
+
+        data_only = "| 1 | SBR API | x | y |\n| 2 | SBR CLI | a | b |\n"
+        result = _normalize_table_subsection_content(data_only)
+        assert result == data_only  # no header to strip; unchanged
+
+    def test_non_table_content_unchanged(self):
+        from scripts.create_issues import _normalize_table_subsection_content
+
+        prose = "Just a paragraph describing something\nwith a second line\n"
+        result = _normalize_table_subsection_content(prose)
+        assert result == prose
+
+    def test_initiative_render_does_not_duplicate_headers(self):
+        from scripts import create_issues
+
+        body = (
+            "#### Objective\nSome objective.\n\n"
+            "#### Release Value\nSome value.\n\n"
+            "#### Success Criteria\n- foo\n\n"
+            "#### Feature Scope\n\n"
+            "| # | Feature/Capability | What It Includes | What It Enables |\n"
+            "|---|---|---|---|\n"
+            "| 1 | API | lib | surface |\n\n"
+            "#### I Know I Am Done When\n- done\n"
+        )
+        item = {
+            "title": "Test init",
+            "description": body,
+            "priority": "P0",
+            "size": "L",
+            "subsections": create_issues._parse_subsections(body, "initiative"),
+        }
+        rendered = create_issues.generate_body(item, "initiative")
+        # Exactly ONE header row in the Feature Scope table area
+        count = rendered.count("| # | Feature/Capability | What It Includes |")
+        assert count == 1, f"expected 1 Feature Scope header, got {count}"
+
+
+class TestFR53TddSentinelDedup:
+    """FR #53: terse 'TDD followed' bullets shouldn't duplicate canonical sentinel."""
+
+    def test_story_done_when_with_tdd_bullet_strips_sentinel(self):
+        from scripts import create_issues
+
+        body = (
+            "#### User Story\nAs a dev, I want X, so that Y.\n\n"
+            "#### TL;DR\nSummary.\n\n"
+            "#### Why This Matters\nReason.\n\n"
+            "#### I Know I Am Done When\n"
+            "- package created\n"
+            "- TDD followed\n\n"
+            "#### Acceptance Criteria\n"
+            "**Scenario 1**: foo\n- Given: x\n- When: y\n- Then: z\n"
+        )
+        item = {
+            "title": "Test",
+            "description": body,
+            "priority": "P0",
+            "size": "S",
+            "parent_ref": "Epic",
+            "subsections": create_issues._parse_subsections(body, "story"),
+        }
+        rendered = create_issues.generate_body(item, "story")
+        # Count lines that mention TDD — should be exactly 1 (operator's bullet)
+        tdd_lines = [l for l in rendered.splitlines() if "TDD followed" in l]
+        assert len(tdd_lines) == 1, (
+            f"expected 1 TDD line, got {len(tdd_lines)}: {tdd_lines}"
+        )
+
+    def test_story_done_when_without_tdd_keeps_sentinel(self):
+        """Backward compat: if operator doesn't mention TDD, template sentinel stays."""
+        from scripts import create_issues
+
+        body = (
+            "#### User Story\nAs a dev, ...\n\n"
+            "#### TL;DR\nSummary.\n\n"
+            "#### Why This Matters\nReason.\n\n"
+            "#### I Know I Am Done When\n- package created\n\n"
+            "#### Acceptance Criteria\n"
+            "**Scenario 1**: foo\n- Given: x\n- When: y\n- Then: z\n"
+        )
+        item = {
+            "title": "Test",
+            "description": body,
+            "priority": "P0",
+            "size": "S",
+            "parent_ref": "Epic",
+            "subsections": create_issues._parse_subsections(body, "story"),
+        }
+        rendered = create_issues.generate_body(item, "story")
+        assert "TDD followed: failing test written BEFORE" in rendered, (
+            "template sentinel should remain when operator didn't mention TDD"
+        )
+
+
 class TestFR46AutoCreateIssueTypes:
     """FR #46: preflight --auto-create-issue-types."""
 

@@ -1213,6 +1213,44 @@ def _bullet_lines(items: list[str], checkbox: bool = False) -> str:
     return "\n".join(f"{prefix}{i}" for i in items)
 
 
+def _normalize_table_subsection_content(raw: str) -> str:
+    """FR #52: when subsection content is a full markdown table, strip the
+    plan's header + delimiter rows so only the data rows remain.
+
+    This prevents header-row duplication when the renderer substitutes the
+    full subsection content in place of a single template placeholder row
+    (the template already provides its own header + delimiter).
+
+    Detection: first non-blank line starts with `|` AND second non-blank
+    line matches a markdown delimiter (cells that are only `-`, `:`, and
+    spaces).
+
+    Returns the content with header + delimiter stripped if detected;
+    otherwise returns `raw` unchanged.
+    """
+    lines = raw.splitlines()
+    # Index the first two non-blank lines
+    non_blank_indices: list[int] = []
+    for i, line in enumerate(lines):
+        if line.strip():
+            non_blank_indices.append(i)
+        if len(non_blank_indices) == 2:
+            break
+    if len(non_blank_indices) < 2:
+        return raw
+    first_idx, second_idx = non_blank_indices
+    first = lines[first_idx].strip()
+    second = lines[second_idx].strip()
+    # Delimiter row: each cell is only `-`, `:`, or spaces (e.g. `|---|:---:|---|`)
+    delim_re = re.compile(r"^\|[\s\-:|]+\|?$")
+    if first.startswith("|") and delim_re.match(second):
+        # Drop lines[first_idx] + lines[second_idx]; keep blanks between
+        # non-blank lines only if they land before first_idx (preserve
+        # original spacing).  Simplest: return lines AFTER second_idx.
+        return "\n".join(lines[second_idx + 1 :]).strip("\n")
+    return raw
+
+
 def _replace_block(rendered: str, old_block: str, new_block: str) -> str:
     """Replace a verbatim block; no-op when the block isn't present."""
     if old_block in rendered:
@@ -1420,7 +1458,11 @@ def _fill_initiative_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # Feature Scope (raw paragraph or bullets → single-column rows)
     fs = subs.get("feature_scope")
     if fs:
-        fs_block = fs if isinstance(fs, str) else _bullet_lines(fs)
+        fs_block = (
+            _normalize_table_subsection_content(fs)
+            if isinstance(fs, str)
+            else _bullet_lines(fs)
+        )
         rendered = _replace_block(
             rendered,
             "| 1 | [FEATURE] | [INCLUDES] | [ENABLES] |",
@@ -1439,7 +1481,11 @@ def _fill_initiative_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # Dependencies
     deps = subs.get("dependencies")
     if deps:
-        deps_block = deps if isinstance(deps, str) else _bullet_lines(deps)
+        deps_block = (
+            _normalize_table_subsection_content(deps)
+            if isinstance(deps, str)
+            else _bullet_lines(deps)
+        )
         rendered = _replace_block(
             rendered,
             "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |",
@@ -1497,7 +1543,11 @@ def _fill_epic_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # Feature Scope
     fs = subs.get("feature_scope")
     if fs:
-        fs_block = fs if isinstance(fs, str) else _bullet_lines(fs)
+        fs_block = (
+            _normalize_table_subsection_content(fs)
+            if isinstance(fs, str)
+            else _bullet_lines(fs)
+        )
         rendered = _replace_block(
             rendered,
             "| 1 | [FEATURE] | [INCLUDES] | [ENABLES] |",
@@ -1516,7 +1566,11 @@ def _fill_epic_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # Dependencies
     deps = subs.get("dependencies")
     if deps:
-        deps_block = deps if isinstance(deps, str) else _bullet_lines(deps)
+        deps_block = (
+            _normalize_table_subsection_content(deps)
+            if isinstance(deps, str)
+            else _bullet_lines(deps)
+        )
         rendered = _replace_block(
             rendered,
             "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |",
@@ -1535,7 +1589,11 @@ def _fill_epic_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # Code Areas
     ca = subs.get("code_areas")
     if ca:
-        ca_block = ca if isinstance(ca, str) else _bullet_lines(ca)
+        ca_block = (
+            _normalize_table_subsection_content(ca)
+            if isinstance(ca, str)
+            else _bullet_lines(ca)
+        )
         rendered = _replace_block(
             rendered,
             "| [TYPE] | [OBJECT] | [LOCATION] | [NOTES] |",
@@ -1598,7 +1656,11 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # Dependencies
     deps = subs.get("dependencies")
     if deps:
-        deps_block = deps if isinstance(deps, str) else _bullet_lines(deps)
+        deps_block = (
+            _normalize_table_subsection_content(deps)
+            if isinstance(deps, str)
+            else _bullet_lines(deps)
+        )
         rendered = _replace_block(
             rendered,
             "| #[N] | [DESCRIPTION] | [STATUS] |",
@@ -1613,6 +1675,17 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
             "- [ ] [ACCEPTANCE CRITERION 1]\n- [ ] [ACCEPTANCE CRITERION 2]",
             _bullet_lines(done, checkbox=True),
         )
+        # FR #53: if operator's Done When already mentions TDD, strip the
+        # template's canonical sentinel to prevent duplicate "TDD followed"
+        # lines in the rendered body.
+        if any("tdd followed" in item.lower() for item in done):
+            rendered = re.sub(
+                r"\n- \[ \] TDD followed: failing test written BEFORE "
+                r"implementation \(Red phase confirmed before writing any "
+                r"production code\)",
+                "",
+                rendered,
+            )
 
     # Acceptance Criteria (scenarios)
     ac = subs.get("acceptance_criteria")
@@ -1654,7 +1727,11 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # Subtasks Needed
     st = subs.get("subtasks_needed")
     if st:
-        st_block = st if isinstance(st, str) else _bullet_lines(st)
+        st_block = (
+            _normalize_table_subsection_content(st)
+            if isinstance(st, str)
+            else _bullet_lines(st)
+        )
         rendered = _replace_block(
             rendered,
             "| 1 | [TASK] | [PTS] | [YES/NO] |",
@@ -1684,6 +1761,15 @@ def _fill_task_subsections(rendered: str, subs: dict[str, Any]) -> str:
             "- [ ] [TECHNICAL CRITERION 1]\n- [ ] [TECHNICAL CRITERION 2]",
             _bullet_lines(done, checkbox=True),
         )
+        # FR #53: strip template's canonical TDD sentinel if operator mentioned TDD.
+        if any("tdd followed" in item.lower() for item in done):
+            rendered = re.sub(
+                r"\n- \[ \] TDD followed: failing test written BEFORE "
+                r"implementation \(Red phase confirmed before writing any "
+                r"production code\)",
+                "",
+                rendered,
+            )
 
     # Implementation Notes
     impl = subs.get("implementation_notes")
