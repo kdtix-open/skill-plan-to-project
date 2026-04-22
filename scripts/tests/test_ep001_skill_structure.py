@@ -43,9 +43,9 @@ class TestSkillMd:
         assert frontmatter["name"], "name must be non-empty"
 
     def test_frontmatter_name_is_kebab_case(self, frontmatter: dict) -> None:
-        assert (
-            frontmatter["name"] == "plan-to-project"
-        ), "name must be 'plan-to-project'"
+        assert frontmatter["name"] == "plan-to-project", (
+            "name must be 'plan-to-project'"
+        )
 
     def test_frontmatter_has_description(self, frontmatter: dict) -> None:
         assert "description" in frontmatter, "frontmatter must have 'description'"
@@ -55,9 +55,9 @@ class TestSkillMd:
     def test_all_9_phases_documented(self, skill_md: str) -> None:
         """SKILL.md must document all 9 workflow phases."""
         for phase_num in range(1, 10):
-            assert (
-                f"Phase {phase_num}" in skill_md
-            ), f"SKILL.md must document Phase {phase_num}"
+            assert f"Phase {phase_num}" in skill_md, (
+                f"SKILL.md must document Phase {phase_num}"
+            )
 
     def test_inputs_table_present(self, skill_md: str) -> None:
         assert "PLAN_FILE" in skill_md, "Inputs table must document PLAN_FILE"
@@ -66,9 +66,9 @@ class TestSkillMd:
         assert "PROJECT_NUMBER" in skill_md, "Inputs table must document PROJECT_NUMBER"
 
     def test_design_decisions_section_present(self, skill_md: str) -> None:
-        assert (
-            "Design Decision" in skill_md
-        ), "SKILL.md must have a Design Decisions section"
+        assert "Design Decision" in skill_md, (
+            "SKILL.md must have a Design Decisions section"
+        )
 
     def test_references_all_scripts(self, skill_md: str) -> None:
         for script in [
@@ -147,18 +147,18 @@ class TestBundledAssets:
     @pytest.mark.parametrize("template", TEMPLATES)
     def test_template_has_tdd_sentinel(self, assets_dir: Path, template: str) -> None:
         content = (assets_dir / template).read_text(encoding="utf-8")
-        assert (
-            "TDD followed" in content
-        ), f"assets/{template} must include TDD sentinel in I Know I Am Done When"
+        assert "TDD followed" in content, (
+            f"assets/{template} must include TDD sentinel in I Know I Am Done When"
+        )
 
     @pytest.mark.parametrize("template", TEMPLATES)
     def test_template_has_done_when_section(
         self, assets_dir: Path, template: str
     ) -> None:
         content = (assets_dir / template).read_text(encoding="utf-8")
-        assert (
-            "I Know I Am Done When" in content
-        ), f"assets/{template} must have 'I Know I Am Done When' section"
+        assert "I Know I Am Done When" in content, (
+            f"assets/{template} must have 'I Know I Am Done When' section"
+        )
 
     def test_story_template_has_user_story_block(self, assets_dir: Path) -> None:
         content = (assets_dir / "template-story.md").read_text(encoding="utf-8")
@@ -171,15 +171,15 @@ class TestBundledAssets:
 
     def test_epic_template_has_security_section(self, assets_dir: Path) -> None:
         content = (assets_dir / "template-epic.md").read_text(encoding="utf-8")
-        assert (
-            "Security" in content
-        ), "Epic template must have Security/Compliance section"
+        assert "Security" in content, (
+            "Epic template must have Security/Compliance section"
+        )
 
     def test_task_template_has_security_section(self, assets_dir: Path) -> None:
         content = (assets_dir / "template-task.md").read_text(encoding="utf-8")
-        assert (
-            "Security" in content
-        ), "Task template must have Security/Compliance section"
+        assert "Security" in content, (
+            "Task template must have Security/Compliance section"
+        )
 
 
 class TestReferenceDocuments:
@@ -221,9 +221,9 @@ class TestReferenceDocuments:
 
     def test_gh_cli_patterns_uses_utf8_encoding(self, references_dir: Path) -> None:
         content = (references_dir / "gh-cli-patterns.md").read_text(encoding="utf-8")
-        assert (
-            "utf-8" in content.lower()
-        ), "gh-cli-patterns.md must document utf-8 encoding"
+        assert "utf-8" in content.lower(), (
+            "gh-cli-patterns.md must document utf-8 encoding"
+        )
 
     def test_compliance_rules_has_p0_p1_p2(self, references_dir: Path) -> None:
         content = (references_dir / "compliance-rules.md").read_text(encoding="utf-8")
@@ -277,25 +277,25 @@ class TestOpenAIYaml:
         iface = openai_yaml["interface"]
         assert "short_description" in iface, "interface must have short_description"
         desc = iface["short_description"]
-        assert (
-            25 <= len(desc) <= 64
-        ), f"short_description must be 25-64 chars, got {len(desc)}: '{desc}'"
+        assert 25 <= len(desc) <= 64, (
+            f"short_description must be 25-64 chars, got {len(desc)}: '{desc}'"
+        )
 
     def test_has_default_prompt(self, openai_yaml: dict) -> None:
         iface = openai_yaml["interface"]
         assert "default_prompt" in iface, "interface must have default_prompt"
-        assert (
-            "$plan-to-project" in iface["default_prompt"]
-        ), "default_prompt must reference $plan-to-project"
+        assert "$plan-to-project" in iface["default_prompt"], (
+            "default_prompt must reference $plan-to-project"
+        )
 
     def test_display_name_matches_skill(self) -> None:
         skill_path = SKILL_ROOT / "SKILL.md"
         openai_path = SKILL_ROOT / "agents" / "openai.yaml"
         skill_text = skill_path.read_text(encoding="utf-8")
         openai_data = yaml.safe_load(openai_path.read_text(encoding="utf-8"))
-        assert (
-            "plan-to-project" in skill_text
-        ), "SKILL.md must reference plan-to-project"
+        assert "plan-to-project" in skill_text, (
+            "SKILL.md must reference plan-to-project"
+        )
         assert openai_data["interface"]["display_name"], "display_name must be set"
 
     def test_does_not_require_github_mcp_server(self, openai_yaml: dict) -> None:
@@ -308,9 +308,9 @@ class TestOpenAIYaml:
             and tool.get("type") == "mcp"
             and tool.get("value") == "github"
         ]
-        assert (
-            not github_mcp_tools
-        ), "openai.yaml should not require GitHub MCP for this CLI-based skill"
+        assert not github_mcp_tools, (
+            "openai.yaml should not require GitHub MCP for this CLI-based skill"
+        )
 
 
 # ---------------------------------------------------------------------------

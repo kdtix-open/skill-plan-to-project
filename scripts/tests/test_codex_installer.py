@@ -53,7 +53,10 @@ class TestCodexInstaller:
         pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
         pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
 
-        assert pyproject["tool"]["setuptools"]["packages"] == ["scripts"]
+        assert pyproject["tool"]["setuptools"]["packages"] == [
+            "scripts",
+            "scripts.sbr",
+        ]
 
     def test_home_skill_installs_under_codex_home(self, tmp_path: Path) -> None:
         source_root = tmp_path / "source"

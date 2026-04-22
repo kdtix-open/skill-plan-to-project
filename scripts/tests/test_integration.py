@@ -270,9 +270,9 @@ class TestIntegrationCreateAllIssues:
         )
         story_idxs = [i for i, t in enumerate(call_titles) if "Story:" in t]
         assert scope_idx is not None
-        assert all(
-            scope_idx < idx for idx in story_idxs
-        ), "Scope must be created before all stories"
+        assert all(scope_idx < idx for idx in story_idxs), (
+            "Scope must be created before all stories"
+        )
 
     @patch("scripts.create_issues._get_issue_ids")
     @patch("scripts.create_issues._create_issue")
@@ -587,9 +587,9 @@ class TestIntegrationFullPipeline:
             labels_map=labels_map,
         )
         assert isinstance(ordered, list)
-        assert all(
-            r["level"] == "story" for r in ordered
-        ), "Queue should only contain stories"
+        assert all(r["level"] == "story" for r in ordered), (
+            "Queue should only contain stories"
+        )
         # P0 story must come before P1 story
         if len(ordered) >= 2:
             assert ordered[0]["priority"] == "P0"

@@ -715,15 +715,12 @@ _ISSUE_TYPE_DEFAULTS: dict[str, dict[str, str]] = {
     "Project Scope": {
         "color": "PURPLE",
         "description": (
-            "A cohesive unit of product scope delivered across one or more "
-            "Initiatives."
+            "A cohesive unit of product scope delivered across one or more Initiatives."
         ),
     },
     "Initiative": {
         "color": "BLUE",
-        "description": (
-            "A multi-Epic body of work delivering a named Release Value."
-        ),
+        "description": ("A multi-Epic body of work delivering a named Release Value."),
     },
     "Epic": {
         "color": "GREEN",
@@ -1783,8 +1780,7 @@ def _fill_task_subsections(rendered: str, subs: dict[str, Any]) -> str:
     sc = subs.get("security_compliance")
     if isinstance(sc, str) and sc.strip():
         rendered = rendered.replace(
-            "[Required if task involves create/update/delete/"
-            "resolve/write operations]",
+            "[Required if task involves create/update/delete/resolve/write operations]",
             sc,
         )
 
@@ -1805,7 +1801,7 @@ def _meta_block(item: dict[str, Any], level: str) -> str:
 def _done_when_block(extra: list[str] | None = None) -> str:
     lines = extra or ["[PROJECT-SPECIFIC CRITERION]"]
     criteria = "\n".join(f"- [ ] {c}" for c in lines)
-    return f"## I Know I Am Done When\n\n" f"{criteria}\n" f"{TDD_SENTINEL}\n"
+    return f"## I Know I Am Done When\n\n{criteria}\n{TDD_SENTINEL}\n"
 
 
 def _moscow_block(musts: list[str]) -> str:
@@ -1972,7 +1968,7 @@ def _body_task(item: dict[str, Any], manifest: dict) -> str:
         f"{desc or '[What this task implements]'}\n\n"
         "---\n\n"
         "## Context\n\n"
-        "- **Parent Story AC**: \"[AC text]\"\n"
+        '- **Parent Story AC**: "[AC text]"\n'
         "- **Preceding Task**: None\n"
         "- **Blocking Tasks**: None\n\n"
         "---\n\n"
@@ -2258,8 +2254,6 @@ def _cmd_create(args: argparse.Namespace) -> None:
         hierarchy, allow_shallow=getattr(args, "allow_shallow_subsections", False)
     )
     create_all_issues(hierarchy, config, args.repo, output_dir=out)
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -2733,9 +2727,7 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
         scope_issue_number=args.scope_issue,
         dry_run=args.dry_run,
         skip_issues=skip_issues or None,
-        allow_shallow_subsections=getattr(
-            args, "allow_shallow_subsections", False
-        ),
+        allow_shallow_subsections=getattr(args, "allow_shallow_subsections", False),
     )
     if out:
         out.mkdir(parents=True, exist_ok=True)
@@ -2801,9 +2793,7 @@ def main() -> None:
         "--auto-create-issue-types",
         action="store_true",
         default=False,
-        help=(
-            "FR #46: auto-create missing org Issue Types during preflight."
-        ),
+        help=("FR #46: auto-create missing org Issue Types during preflight."),
     )
 
     p_refresh = sub.add_parser(

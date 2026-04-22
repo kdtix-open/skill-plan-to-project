@@ -50,9 +50,7 @@ class TestLoadConfig:
         assert b"BEGIN" in pem_bytes
         assert "env(key_path)" in source
 
-    def test_load_config_from_env_github_names_inline_pem(
-        self, tmp_path, monkeypatch
-    ):
+    def test_load_config_from_env_github_names_inline_pem(self, tmp_path, monkeypatch):
         """FR #49 patch: GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY take precedence."""
         _clear_all_env(monkeypatch)
         key_path = _generate_test_keypair(tmp_path)
@@ -92,9 +90,7 @@ class TestLoadConfig:
         key = _generate_test_keypair(tmp_path)
         (tmp_path / ".sdlca").mkdir()
         conf = tmp_path / ".sdlca" / "app.conf"
-        conf.write_text(
-            f'SDLCA_APP_ID="99999"\nSDLCA_APP_PRIVATE_KEY_PATH="{key}"\n'
-        )
+        conf.write_text(f'SDLCA_APP_ID="99999"\nSDLCA_APP_PRIVATE_KEY_PATH="{key}"\n')
         monkeypatch.setattr(mint_app_token.Path, "home", lambda: tmp_path)
 
         app_id, pem_bytes, source = mint_app_token._load_config()
@@ -133,9 +129,7 @@ class TestLoadConfig:
         captured = capsys.readouterr()
         assert "does not look like PEM" in captured.err
 
-    def test_load_config_key_path_not_found_exits(
-        self, tmp_path, monkeypatch, capsys
-    ):
+    def test_load_config_key_path_not_found_exits(self, tmp_path, monkeypatch, capsys):
         _clear_all_env(monkeypatch)
         monkeypatch.setenv("SDLCA_APP_ID", "12345")
         monkeypatch.setenv(
@@ -173,9 +167,7 @@ class TestSignAppJwt:
 
 
 class TestMintForOrg:
-    def test_mint_auto_discovers_installation_and_mints(
-        self, tmp_path, monkeypatch
-    ):
+    def test_mint_auto_discovers_installation_and_mints(self, tmp_path, monkeypatch):
         key = _generate_test_keypair(tmp_path)
         monkeypatch.setenv("SDLCA_APP_ID", "12345")
         monkeypatch.setenv("SDLCA_APP_PRIVATE_KEY_PATH", str(key))
@@ -201,9 +193,7 @@ class TestMintForOrg:
         assert result["expires_at"] == "2026-04-22T08:00:00Z"
         assert result["installation_id"] == 9876543
 
-    def test_mint_respects_explicit_installation_id_env(
-        self, tmp_path, monkeypatch
-    ):
+    def test_mint_respects_explicit_installation_id_env(self, tmp_path, monkeypatch):
         key = _generate_test_keypair(tmp_path)
         monkeypatch.setenv("SDLCA_APP_ID", "12345")
         monkeypatch.setenv("SDLCA_APP_PRIVATE_KEY_PATH", str(key))
@@ -223,9 +213,7 @@ class TestMintForOrg:
             result = mint_app_token.mint_for_org("kdtix-open")
 
         # Discovery endpoint should NOT be called when env override present
-        assert not any(
-            u.endswith("/orgs/kdtix-open/installation") for u in call_urls
-        )
+        assert not any(u.endswith("/orgs/kdtix-open/installation") for u in call_urls)
         # Mint endpoint uses the explicit installation ID
         assert any(u.endswith("/installations/11111/access_tokens") for u in call_urls)
         assert result["installation_id"] == 11111
