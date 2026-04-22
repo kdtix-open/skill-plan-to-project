@@ -1011,6 +1011,67 @@ class TestRefreshMode:
         assert "issue-182-after" in diff_text
         assert "OLD BODY" in diff_text  # the removed line shows in the diff
 
+    def test_refresh_skip_issues_excludes_from_apply(self, mocker):
+        """Issues in skip_issues are reported as 'skipped', never body-fetched."""
+        from scripts import create_issues
+
+        mocker.patch(
+            "scripts.create_issues.parse_plan",
+            return_value={
+                "scope": {
+                    "title": "Project Scope: PS-X Test",
+                    "description": "desc",
+                    "priority": "P0",
+                    "size": "M",
+                },
+                "initiatives": [],
+                "epics": [],
+                "stories": [],
+                "tasks": [],
+            },
+        )
+        mocker.patch(
+            "scripts.create_issues._walk_existing_hierarchy",
+            return_value=[
+                {
+                    "number": 182,
+                    "title": "Project Scope: PS-X Test",
+                    "level": "scope",
+                    "parent_number": None,
+                },
+                {
+                    "number": 266,
+                    "title": "Story: Preserve me",
+                    "level": "story",
+                    "parent_number": 182,
+                },
+            ],
+        )
+        get_body_mock = mocker.patch(
+            "scripts.gh_helpers.get_issue_body", return_value="# Old scope body"
+        )
+        update_mock = mocker.patch("scripts.gh_helpers.update_issue_body")
+
+        report = create_issues.refresh_backlog(
+            plan_path="dummy.md",
+            repo="owner/repo",
+            scope_issue_number=182,
+            dry_run=False,
+            skip_issues={266},
+        )
+
+        # Skipped issue is reported as 'skipped' + never body-fetched
+        statuses = {i["number"]: i["status"] for i in report["per_issue"]}
+        assert statuses[266] == "skipped"
+        assert report["summary"]["skipped"] == 1
+        # get_issue_body was called for #182 but NOT #266
+        fetched_numbers = [call.args[1] for call in get_body_mock.call_args_list]
+        assert 266 not in fetched_numbers
+        # update_issue_body never called with #266
+        for call in update_mock.call_args_list:
+            args = call.args
+            assert args[1] != 266
+
     def test_preserve_outside_zone_keeps_html_comment_prefix(self):
         """Stage 2.5: HTML comment + blockquote before `# Heading` survive refresh."""
         from scripts import create_issues
