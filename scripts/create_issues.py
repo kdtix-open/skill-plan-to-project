@@ -708,12 +708,155 @@ EXPECTED_ISSUE_TYPES = {
 EXPECTED_FIELDS = ("Priority", "Size", "Status")
 
 
+# FR #46: default descriptions + color/icon for auto-created Issue Types.
+# GitHub's createIssueType mutation accepts a fixed set of color + icon
+# enum values.  These defaults are conservative + match common practice.
+_ISSUE_TYPE_DEFAULTS: dict[str, dict[str, str]] = {
+    "Project Scope": {
+        "color": "PURPLE",
+        "description": (
+            "A cohesive unit of product scope delivered across one or more "
+            "Initiatives."
+        ),
+    },
+    "Initiative": {
+        "color": "BLUE",
+        "description": (
+            "A multi-Epic body of work delivering a named Release Value."
+        ),
+    },
+    "Epic": {
+        "color": "GREEN",
+        "description": "A cohesive body of Stories delivering a Feature Scope.",
+    },
+    "User Story": {
+        "color": "YELLOW",
+        "description": (
+            "A single slice of user-facing value delivered in one coding effort."
+        ),
+    },
+    "Task": {
+        "color": "GRAY",
+        "description": "A tactical implementation unit of a User Story.",
+    },
+}
+
+_CREATE_ISSUE_TYPE_MUTATION = """
+mutation($ownerId: ID!, $name: String!, $description: String!,
+         $color: IssueTypeColor!) {
+  createIssueType(input: {
+    ownerId: $ownerId,
+    name: $name,
+    description: $description,
+    color: $color,
+    isEnabled: true
+  }) {
+    issueType { id name }
+  }
+}
+"""
+
+_ORG_NODE_ID_QUERY = """
+query($org: String!) {
+  organization(login: $org) { id }
+}
+"""
+
+
+def _auto_create_missing_issue_types(
+    org: str, missing_alias_keys: list[str], dry_run: bool = False
+) -> list[str]:
+    """FR #46: create Issue Types in the org for each missing alias key.
+
+    `missing_alias_keys` is a list of values from EXPECTED_ISSUE_TYPES
+    (e.g. "Project Scope", "Initiative", ...).  Returns the names that
+    would be (or were) created.
+
+    When dry_run=True, returns the list of names that WOULD be created
+    without mutating.
+
+    Requires Organization: Issue types read/write permission on the
+    calling token / GitHub App.
+    """
+    names: list[str] = []
+    # Fetch the org's node ID once — createIssueType mutation needs it.
+    owner_id: str | None = None
+    if not dry_run:
+        result = run_gh(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={_ORG_NODE_ID_QUERY}",
+                "-f",
+                f"org={org}",
+            ],
+        )
+        data = json.loads(result.stdout)
+        owner_id = data.get("data", {}).get("organization", {}).get("id")
+        if not owner_id:
+            raise PreflightError(
+                f"Could not resolve org '{org}' node ID for Issue Type creation."
+            )
+
+    for key in missing_alias_keys:
+        defaults = _ISSUE_TYPE_DEFAULTS.get(key)
+        if not defaults:
+            continue
+        names.append(key)
+        if dry_run:
+            print(
+                f"[auto-create-issue-types] WOULD CREATE: '{key}' "
+                f"(color={defaults['color']}, "
+                f"description='{defaults['description'][:50]}...')"
+            )
+            continue
+        print(
+            f"[auto-create-issue-types] Creating Issue Type '{key}' "
+            f"(color={defaults['color']})..."
+        )
+        run_gh(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={_CREATE_ISSUE_TYPE_MUTATION}",
+                "-f",
+                f"ownerId={owner_id}",
+                "-f",
+                f"name={key}",
+                "-f",
+                f"description={defaults['description']}",
+                "-f",
+                f"color={defaults['color']}",
+            ],
+        )
+    return names
+
+
 def preflight(
-    org: str, repo: str, project_number: int, output_dir: Path | None = None
+    org: str,
+    repo: str,
+    project_number: int,
+    output_dir: Path | None = None,
+    auto_create_issue_types: bool = False,
+    dry_run_create: bool = False,
 ) -> dict[str, Any]:
     """Validate org Issue Types and project V2 field IDs.
 
     Returns a config dict with issue_type_ids and field_ids.
+
+    Args:
+        auto_create_issue_types: FR #46 — when True, missing Issue Types are
+            created via GraphQL mutation (requires Organization: Issue types
+            read/write permission on the GitHub App or equivalent personal
+            token scope).  Default False preserves fail-fast behavior.
+        dry_run_create: FR #46 — when True AND auto_create_issue_types=True,
+            print what would be created without mutating.  Dry-run STILL
+            fails preflight (missing types are not actually created) so
+            downstream `create` won't proceed.
 
     Raises:
         AuthError: If gh is not authenticated.
@@ -743,11 +886,12 @@ def preflight(
         .get("issueTypes", {})
         .get("nodes", [])
     )
-    if not nodes:
+    if not nodes and not auto_create_issue_types:
         raise PreflightError(
             f"No Issue Types found for org '{org}'. "
             "Configure Issue Types (Project Scope, Initiative, Epic, User Story, Task) "
-            f"at https://github.com/organizations/{org}/settings/issue-types"
+            f"at https://github.com/organizations/{org}/settings/issue-types "
+            "or pass `--auto-create-issue-types` to create them."
         )
 
     issue_type_ids: dict[str, str] = {}
@@ -761,11 +905,58 @@ def preflight(
     missing_types = [
         k for k in EXPECTED_ISSUE_TYPES.values() if k not in issue_type_ids
     ]
+    # FR #46: if --auto-create-issue-types flag is set, attempt to create
+    # the missing types.  Behavior on missing types then depends on flag.
+    created_types: list[str] = []
+    if missing_types and auto_create_issue_types:
+        created_types = _auto_create_missing_issue_types(
+            org, missing_types, dry_run=dry_run_create
+        )
+        if dry_run_create:
+            # Dry-run: print + still fail (types not created; downstream create
+            # would fail anyway).
+            raise PreflightError(
+                f"Dry-run: would create {len(created_types)} Issue Type(s) in "
+                f"org '{org}': {created_types}.  Re-run without --dry-run to "
+                "actually create them."
+            )
+        # Real-create path: re-query Issue Types to pick up new IDs
+        result = run_gh(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={_ISSUE_TYPES_QUERY}",
+                "-f",
+                f"org={org}",
+            ],
+        )
+        data = json.loads(result.stdout)
+        nodes = (
+            data.get("data", {})
+            .get("organization", {})
+            .get("issueTypes", {})
+            .get("nodes", [])
+        )
+        issue_type_ids = {}
+        for node in nodes:
+            key = node["name"].lower()
+            for expected, alias in EXPECTED_ISSUE_TYPES.items():
+                if expected in key:
+                    issue_type_ids[alias] = node["id"]
+                    break
+        missing_types = [
+            k for k in EXPECTED_ISSUE_TYPES.values() if k not in issue_type_ids
+        ]
+
     if missing_types:
         raise PreflightError(
             f"Missing Issue Types in org '{org}': {missing_types}. "
             "All 5 types (Project Scope, Initiative, Epic, "
-            "User Story, Task) are required."
+            "User Story, Task) are required.  "
+            "Pass `--auto-create-issue-types` to create them automatically "
+            "(requires Organization: Issue types read/write permission)."
         )
 
     # --- Project V2 fields ---
@@ -1880,8 +2071,21 @@ def _cmd_parse(args: argparse.Namespace) -> None:
 
 
 def _cmd_preflight(args: argparse.Namespace) -> None:
+    """FR #46: preflight supports --auto-create-issue-types + --dry-run."""
     out = Path(args.output_dir) if args.output_dir else None
-    preflight(args.org, args.repo, args.project, output_dir=out)
+    try:
+        preflight(
+            args.org,
+            args.repo,
+            args.project,
+            output_dir=out,
+            auto_create_issue_types=getattr(args, "auto_create_issue_types", False),
+            dry_run_create=getattr(args, "dry_run", False),
+        )
+    except PreflightError as exc:
+        print(f"[preflight] {exc}", file=sys.stderr)
+        sys.exit(1)
+    print("[preflight] OK")
 
 
 def _iter_hierarchy_items(
@@ -1954,13 +2158,22 @@ def enforce_subsection_schema(
 
 def _cmd_create(args: argparse.Namespace) -> None:
     out = Path(args.output_dir) if args.output_dir else None
-    config = preflight(args.org, args.repo, args.project, output_dir=out)
+    config = preflight(
+        args.org,
+        args.repo,
+        args.project,
+        output_dir=out,
+        auto_create_issue_types=getattr(args, "auto_create_issue_types", False),
+        dry_run_create=getattr(args, "dry_run", False),
+    )
     hierarchy = parse_plan(args.plan)
     # FR #45: gate on required subsection schema before any GH mutation.
     enforce_subsection_schema(
         hierarchy, allow_shallow=getattr(args, "allow_shallow_subsections", False)
     )
     create_all_issues(hierarchy, config, args.repo, output_dir=out)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -2461,6 +2674,26 @@ def main() -> None:
     p_pre.add_argument("--repo", required=True)
     p_pre.add_argument("--project", required=True, type=int)
     p_pre.add_argument("--output-dir", default=None, help="Output directory")
+    p_pre.add_argument(
+        "--auto-create-issue-types",
+        action="store_true",
+        default=False,
+        help=(
+            "FR #46: auto-create missing org Issue Types "
+            "(Project Scope / Initiative / Epic / User Story / Task) via "
+            "GraphQL mutation.  Requires Organization: Issue types read/write "
+            "permission.  Default: fail-fast when types missing."
+        ),
+    )
+    p_pre.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help=(
+            "With --auto-create-issue-types: preview creation without "
+            "mutating.  Preflight still fails so downstream create won't run."
+        ),
+    )
 
     p_create = sub.add_parser("create", help="Run preflight + parse + create issues")
     p_create.add_argument("--plan", required=True)
@@ -2476,6 +2709,14 @@ def main() -> None:
             "FR #45: bypass the required-subsection gate (default: fail-fast "
             "when plan items lack per-level required subsections). "
             "Use SPARINGLY — document why in commit / PR body."
+        ),
+    )
+    p_create.add_argument(
+        "--auto-create-issue-types",
+        action="store_true",
+        default=False,
+        help=(
+            "FR #46: auto-create missing org Issue Types during preflight."
         ),
     )
 
