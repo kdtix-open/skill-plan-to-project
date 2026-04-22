@@ -253,8 +253,11 @@ task). Each subsection heading can use any markdown depth (`##` through
 | story | `user_story`, `tldr`, `why_this_matters`, `moscow`, `acceptance_criteria`, `constraints`, `implementation_notes`, `security_compliance`, `subtasks_needed` | as-named | mixed |
 | task | `summary`, `context`, `done_when`, `implementation_notes`, `security_compliance` | as-named | mixed |
 
-Subsections are OPTIONAL — when absent, the original template placeholder remains
-and the P0-4 scanner flags it. This lets you adopt the schema one plan at a time.
+Subsections are OPTIONAL BY CONSTRUCTION but REQUIRED FOR SHIP by default (FR #45).
+Per-level required lists + escape-hatch flag documented in
+[plan-format.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/plan-format.md#required-subsections-per-level-fr-45).
+`create` and `refresh` fail-fast by default; pass `--allow-shallow-subsections`
+to bypass (emergencies only; document why in commit / PR body).
 
 ### Mermaid diagram support (FR #40)
 

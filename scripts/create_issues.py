@@ -1884,10 +1884,82 @@ def _cmd_preflight(args: argparse.Namespace) -> None:
     preflight(args.org, args.repo, args.project, output_dir=out)
 
 
+def _iter_hierarchy_items(
+    hierarchy: dict[str, Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Flatten hierarchy into (level, item) tuples for iteration."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    if hierarchy.get("scope"):
+        out.append(("scope", hierarchy["scope"]))
+    for level in ("initiative", "epic", "story", "task"):
+        key = "initiatives" if level == "initiative" else f"{level}s"
+        for item in hierarchy.get(key, []) or []:
+            if item:
+                out.append((level, item))
+    return out
+
+
+def enforce_subsection_schema(
+    hierarchy: dict[str, Any],
+    allow_shallow: bool = False,
+) -> list[tuple[str, str, list[str]]]:
+    """FR #45: gate creation + refresh on required subsection presence.
+
+    Args:
+        hierarchy: output of `parse_plan()`.
+        allow_shallow: when True, log warnings but do not exit.  Default
+            False = fail-fast with exit code 3.
+
+    Returns:
+        List of (level, title, missing_keys) gap tuples.  Empty when the
+        whole plan passes.  Non-empty + not allow_shallow => sys.exit(3).
+    """
+    from scripts.compliance_check import check_required_subsections
+
+    gaps: list[tuple[str, str, list[str]]] = []
+    for level, item in _iter_hierarchy_items(hierarchy):
+        missing = check_required_subsections(item, level)
+        if missing:
+            gaps.append((level, item.get("title", "?"), missing))
+
+    if not gaps:
+        return gaps
+
+    print(
+        f"[subsection-schema] {len(gaps)} item(s) missing required subsections:",
+        file=sys.stderr,
+    )
+    for level, title, missing in gaps:
+        print(f"  [{level}] {title[:70]}", file=sys.stderr)
+        print(f"    missing: {', '.join(missing)}", file=sys.stderr)
+
+    if allow_shallow:
+        print(
+            "\n[subsection-schema] --allow-shallow-subsections set; proceeding.\n"
+            "  Generated issue bodies will carry template placeholder leaks\n"
+            "  (flagged by P0-4 scanner).  Document why full schema wasn't used\n"
+            "  in the commit / PR body.",
+            file=sys.stderr,
+        )
+        return gaps
+
+    print(
+        "\n[subsection-schema] FAIL: plans MUST use the full subsection schema.\n"
+        "  See references/plan-format.md for per-level required subsections.\n"
+        "  Emergency bypass: pass --allow-shallow-subsections (document why).",
+        file=sys.stderr,
+    )
+    sys.exit(3)
+
+
 def _cmd_create(args: argparse.Namespace) -> None:
     out = Path(args.output_dir) if args.output_dir else None
     config = preflight(args.org, args.repo, args.project, output_dir=out)
     hierarchy = parse_plan(args.plan)
+    # FR #45: gate on required subsection schema before any GH mutation.
+    enforce_subsection_schema(
+        hierarchy, allow_shallow=getattr(args, "allow_shallow_subsections", False)
+    )
     create_all_issues(hierarchy, config, args.repo, output_dir=out)
 
 
@@ -2176,6 +2248,7 @@ def refresh_backlog(
     scope_issue_number: int,
     dry_run: bool = True,
     skip_issues: set[int] | None = None,
+    allow_shallow_subsections: bool = False,
 ) -> dict[str, Any]:
     """Patch/upgrade existing backlog issues using the current skill's
     template + parser.  Does NOT create or remove any issues.
@@ -2237,6 +2310,8 @@ def refresh_backlog(
     print(f"[refresh] found {len(existing)} existing issues")
 
     hierarchy = parse_plan(plan_path)
+    # FR #45: gate on required subsection schema before any GH mutation.
+    enforce_subsection_schema(hierarchy, allow_shallow=allow_shallow_subsections)
     items_by_title = _flatten_parsed_hierarchy(hierarchy)
     print(f"[refresh] parsed {len(items_by_title)} items from {plan_path}")
 
@@ -2359,6 +2434,9 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
         scope_issue_number=args.scope_issue,
         dry_run=args.dry_run,
         skip_issues=skip_issues or None,
+        allow_shallow_subsections=getattr(
+            args, "allow_shallow_subsections", False
+        ),
     )
     if out:
         out.mkdir(parents=True, exist_ok=True)
@@ -2390,6 +2468,16 @@ def main() -> None:
     p_create.add_argument("--repo", required=True)
     p_create.add_argument("--project", required=True, type=int)
     p_create.add_argument("--output-dir", default=None, help="Output directory")
+    p_create.add_argument(
+        "--allow-shallow-subsections",
+        action="store_true",
+        default=False,
+        help=(
+            "FR #45: bypass the required-subsection gate (default: fail-fast "
+            "when plan items lack per-level required subsections). "
+            "Use SPARINGLY — document why in commit / PR body."
+        ),
+    )
 
     p_refresh = sub.add_parser(
         "refresh",
@@ -2435,6 +2523,16 @@ def main() -> None:
             "Skipped issues are reported as status='skipped' and NEVER have "
             "their bodies re-rendered or updated. Use when dry-run review "
             "identifies issues whose existing body should be preserved."
+        ),
+    )
+    p_refresh.add_argument(
+        "--allow-shallow-subsections",
+        action="store_true",
+        default=False,
+        help=(
+            "FR #45: bypass the required-subsection gate. Default: fail-fast "
+            "when plan items lack per-level required subsections. "
+            "Document why you used this flag in the commit / PR body."
         ),
     )
 
