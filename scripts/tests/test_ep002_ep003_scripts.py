@@ -742,11 +742,167 @@ class TestCheckIssue:
         assert len(p0_gaps) == 0
 
 
+class TestWalkExistingHierarchy:
+    """FR #34 Stage 5 walker: fetch title + issue-type via GraphQL.
+
+    Historical bug (fix/walker-graphql-issuetype): the walker used
+    `gh issue view --json issueType` which is not supported by all installed
+    gh CLI versions (e.g. gh 2.90.0 returns "Unknown JSON field: issueType").
+    The walker now issues a GraphQL query via `gh api graphql` which is
+    stable across gh versions.
+    """
+
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_fetches_issue_via_graphql_not_issue_view(self, mock_run):
+        """Walker must use `gh api graphql` so it works on all gh versions."""
+        from scripts import create_issues
+
+        # First call: GraphQL fetch of root issue #182.
+        # Second call: REST fetch of sub_issues (empty → terminates recursion).
+        mock_run.side_effect = [
+            make_ok(
+                json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "issue": {
+                                    "number": 182,
+                                    "title": "Project Scope: Test",
+                                    "issueType": {"name": "Project Scope"},
+                                }
+                            }
+                        }
+                    }
+                )
+            ),
+            make_ok("[]"),
+        ]
+        results = create_issues._walk_existing_hierarchy("owner/repo", 182)
+        assert len(results) == 1
+        assert results[0]["number"] == 182
+        assert results[0]["level"] == "scope"
+
+        # Walker must call `gh api graphql` — NOT `gh issue view --json issueType`
+        all_calls_str = str(mock_run.call_args_list)
+        assert (
+            "gh' 'api' 'graphql" in all_calls_str
+            or "gh', 'api', 'graphql" in all_calls_str
+        )
+        assert (
+            "--json" not in all_calls_str
+            or "issueType" not in all_calls_str.split("--json")[1]
+            if "--json" in all_calls_str
+            else True
+        )
+
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_walks_recursively_into_sub_issues(self, mock_run):
+        from scripts import create_issues
+
+        def side_effect(cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            # GraphQL call carries "query" text — detect by arg ordering
+            if "graphql" in cmd:
+                # Extract the number from the -F number=N arg
+                num_arg = next((a for a in cmd if a.startswith("number=")), None)
+                if not num_arg:
+                    return make_ok("{}")
+                n = int(num_arg.split("=", 1)[1])
+                titles = {
+                    182: ("Project Scope: Root", "Project Scope"),
+                    183: ("Initiative: Child A", "Initiative"),
+                    184: ("Epic: Grandchild", "Epic"),
+                }
+                title, itype = titles.get(n, (f"Issue {n}", "Task"))
+                return make_ok(
+                    json.dumps(
+                        {
+                            "data": {
+                                "repository": {
+                                    "issue": {
+                                        "number": n,
+                                        "title": title,
+                                        "issueType": {"name": itype},
+                                    }
+                                }
+                            }
+                        }
+                    )
+                )
+            if "sub_issues" in cmd_str:
+                # Map parent→children
+                if "182" in cmd_str:
+                    return make_ok(json.dumps([{"number": 183}]))
+                if "183" in cmd_str:
+                    return make_ok(json.dumps([{"number": 184}]))
+                return make_ok("[]")
+            return make_ok("{}")
+
+        mock_run.side_effect = side_effect
+
+        results = create_issues._walk_existing_hierarchy("owner/repo", 182)
+        assert [r["number"] for r in results] == [182, 183, 184]
+        assert [r["level"] for r in results] == ["scope", "initiative", "epic"]
+        assert results[1]["parent_number"] == 182
+        assert results[2]["parent_number"] == 183
+
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_fails_soft_on_graphql_error(self, mock_run):
+        """If GraphQL fails for a node, walker returns [] without crashing."""
+        from scripts import create_issues
+
+        err = make_ok("")
+        err.returncode = 1
+        err.stderr = "HTTP 502"
+        mock_run.return_value = err
+
+        results = create_issues._walk_existing_hierarchy("owner/repo", 182)
+        assert results == []
+
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_falls_back_to_depth_inference_when_issue_type_missing(self, mock_run):
+        """If issueType is null, walker falls back to depth-based level."""
+        from scripts import create_issues
+
+        mock_run.side_effect = [
+            make_ok(
+                json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "issue": {
+                                    "number": 182,
+                                    "title": "Unlabeled issue",
+                                    "issueType": None,  # no type set
+                                }
+                            }
+                        }
+                    }
+                )
+            ),
+            make_ok("[]"),
+        ]
+        results = create_issues._walk_existing_hierarchy("owner/repo", 182)
+        assert len(results) == 1
+        # depth=0 → scope by fallback
+        assert results[0]["level"] == "scope"
+
+    @patch("scripts.gh_helpers.subprocess.run")
+    def test_rejects_malformed_repo_string(self, mock_run):
+        """A repo with no '/' must not hit the network (defensive check)."""
+        from scripts import create_issues
+
+        results = create_issues._walk_existing_hierarchy("no-slash-here", 1)
+        assert results == []
+        mock_run.assert_not_called()
+
+
 class TestRefreshMode:
     """FR #34 Stage 5: refresh existing backlog in-place without duplicates."""
 
     def test_flatten_parsed_hierarchy_normalizes_prefixes(self):
         from scripts import create_issues
+
         hierarchy = {
             "scope": {"title": "Project Scope: PS-XXX Foo Bar", "description": "desc"},
             "initiatives": [{"title": "Initiative: INIT-001 Baz", "description": "x"}],
@@ -772,7 +928,12 @@ class TestRefreshMode:
         mocker.patch(
             "scripts.create_issues.parse_plan",
             return_value={
-                "scope": {"title": "Project Scope: PS-X Test", "description": "desc", "priority": "P0", "size": "M"},
+                "scope": {
+                    "title": "Project Scope: PS-X Test",
+                    "description": "desc",
+                    "priority": "P0",
+                    "size": "M",
+                },
                 "initiatives": [],
                 "epics": [],
                 "stories": [],
@@ -783,7 +944,12 @@ class TestRefreshMode:
         mocker.patch(
             "scripts.create_issues._walk_existing_hierarchy",
             return_value=[
-                {"number": 182, "title": "Project Scope: PS-X Test", "level": "scope", "parent_number": None},
+                {
+                    "number": 182,
+                    "title": "Project Scope: PS-X Test",
+                    "level": "scope",
+                    "parent_number": None,
+                },
             ],
         )
         # Mock body fetch (different from what generate_body would produce)
@@ -815,14 +981,27 @@ class TestRefreshMode:
         mocker.patch(
             "scripts.create_issues.parse_plan",
             return_value={
-                "scope": {"title": "Project Scope: PS-X Test", "description": "desc", "priority": "P0", "size": "M"},
-                "initiatives": [], "epics": [], "stories": [], "tasks": [],
+                "scope": {
+                    "title": "Project Scope: PS-X Test",
+                    "description": "desc",
+                    "priority": "P0",
+                    "size": "M",
+                },
+                "initiatives": [],
+                "epics": [],
+                "stories": [],
+                "tasks": [],
             },
         )
         mocker.patch(
             "scripts.create_issues._walk_existing_hierarchy",
             return_value=[
-                {"number": 182, "title": "Project Scope: PS-X Test", "level": "scope", "parent_number": None},
+                {
+                    "number": 182,
+                    "title": "Project Scope: PS-X Test",
+                    "level": "scope",
+                    "parent_number": None,
+                },
             ],
         )
         mocker.patch(
@@ -854,14 +1033,27 @@ class TestRefreshMode:
         mocker.patch(
             "scripts.create_issues.parse_plan",
             return_value={
-                "scope": {"title": "Project Scope: PS-X Test", "description": "d", "priority": "P0", "size": "M"},
-                "initiatives": [], "epics": [], "stories": [], "tasks": [],
+                "scope": {
+                    "title": "Project Scope: PS-X Test",
+                    "description": "d",
+                    "priority": "P0",
+                    "size": "M",
+                },
+                "initiatives": [],
+                "epics": [],
+                "stories": [],
+                "tasks": [],
             },
         )
         mocker.patch(
             "scripts.create_issues._walk_existing_hierarchy",
             return_value=[
-                {"number": 999, "title": "Some Orphan Issue Not In Plan", "level": "story", "parent_number": None},
+                {
+                    "number": 999,
+                    "title": "Some Orphan Issue Not In Plan",
+                    "level": "story",
+                    "parent_number": None,
+                },
             ],
         )
         get_body_mock = mocker.patch("scripts.gh_helpers.get_issue_body")
@@ -887,19 +1079,37 @@ class TestRefreshMode:
         mocker.patch(
             "scripts.create_issues.parse_plan",
             return_value={
-                "scope": {"title": "Project Scope: PS-X Test", "description": "d", "priority": "P0", "size": "M"},
-                "initiatives": [], "epics": [], "stories": [], "tasks": [],
+                "scope": {
+                    "title": "Project Scope: PS-X Test",
+                    "description": "d",
+                    "priority": "P0",
+                    "size": "M",
+                },
+                "initiatives": [],
+                "epics": [],
+                "stories": [],
+                "tasks": [],
             },
         )
         mocker.patch(
             "scripts.create_issues._walk_existing_hierarchy",
             return_value=[
-                {"number": 182, "title": "Project Scope: PS-X Test", "level": "scope", "parent_number": None},
+                {
+                    "number": 182,
+                    "title": "Project Scope: PS-X Test",
+                    "level": "scope",
+                    "parent_number": None,
+                },
             ],
         )
         # Generate what the skill would produce, then mock get_issue_body to return that
         expected_body = create_issues.generate_body(
-            {"title": "Project Scope: PS-X Test", "description": "d", "priority": "P0", "size": "M"},
+            {
+                "title": "Project Scope: PS-X Test",
+                "description": "d",
+                "priority": "P0",
+                "size": "M",
+            },
             "scope",
         )
         mocker.patch("scripts.gh_helpers.get_issue_body", return_value=expected_body)
@@ -938,7 +1148,8 @@ class TestP0_4PlaceholderScanner:
     def test_detects_descriptive_placeholder(self):
         body = (
             "## Business Problem & Current State\n\n"
-            "[Describe the problem being solved and why the current approach is insufficient]\n"
+            "[Describe the problem being solved and why the "
+            "current approach is insufficient]\n"
         )
         gaps = compliance_check.check_issue(1, "Test", body, "scope")
         p0_4 = [g for g in gaps if g["rule"] == "P0-4"]

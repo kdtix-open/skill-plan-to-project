@@ -880,7 +880,9 @@ def _cmd_create(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _walk_existing_hierarchy(repo: str, scope_issue_number: int) -> list[dict[str, Any]]:
+def _walk_existing_hierarchy(
+    repo: str, scope_issue_number: int
+) -> list[dict[str, Any]]:
     """Walk sub-issue tree rooted at scope_issue_number using GH sub-issues REST.
 
     Returns a flat list of {number, title, level, parent_number} entries for
@@ -899,18 +901,53 @@ def _walk_existing_hierarchy(repo: str, scope_issue_number: int) -> list[dict[st
         return ["scope", "initiative", "epic", "story", "task"][min(depth, 4)]
 
     def _fetch_issue(number: int) -> dict[str, Any] | None:
-        # Fetch title + issue-type via `gh issue view`
+        # Fetch title + issue-type via GraphQL.
+        #
+        # We used to call `gh issue view N --json number,title,issueType` but
+        # the `issueType` field is not exposed by every installed gh CLI
+        # version (observed broken on gh 2.90.0 2026-04-16: "Unknown JSON
+        # field: issueType").  GraphQL via `gh api graphql` is stable across
+        # gh versions because the `issueType { name }` subfield is part of
+        # the public GitHub API surface, independent of whatever the gh CLI
+        # decides to whitelist for `issue view --json`.
+        if "/" not in repo:
+            return None
+        owner, name = repo.split("/", 1)
+        query = (
+            "query($owner: String!, $name: String!, $number: Int!) { "
+            "repository(owner: $owner, name: $name) { "
+            "issue(number: $number) { "
+            "number title issueType { name } "
+            "} } }"
+        )
         r = run_gh(
-            ["gh", "issue", "view", str(number), "-R", repo,
-             "--json", "number,title,issueType"],
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"name={name}",
+                "-F",
+                f"number={number}",
+            ],
             check=False,
         )
         if r.returncode != 0:
             return None
         try:
-            return json.loads(r.stdout)
+            payload = json.loads(r.stdout)
         except json.JSONDecodeError:
             return None
+        issue = (payload or {}).get("data", {}).get("repository", {}).get("issue")
+        # Shape the result so callers see the same dict shape they got from
+        # the old `gh issue view --json` path: {number, title, issueType}.
+        if not issue:
+            return None
+        return issue
 
     def _fetch_sub_issues(number: int) -> list[int]:
         r = run_gh(
@@ -938,12 +975,14 @@ def _walk_existing_hierarchy(repo: str, scope_issue_number: int) -> list[dict[st
         }
         issue_type_name = (issue.get("issueType") or {}).get("name", "")
         level = level_by_type.get(issue_type_name) or _infer_level_by_depth(depth)
-        results.append({
-            "number": issue["number"],
-            "title": issue["title"],
-            "level": level,
-            "parent_number": parent_number,
-        })
+        results.append(
+            {
+                "number": issue["number"],
+                "title": issue["title"],
+                "level": level,
+                "parent_number": parent_number,
+            }
+        )
         for child_num in _fetch_sub_issues(number):
             _recurse(child_num, depth + 1, number)
 
@@ -973,7 +1012,7 @@ def _flatten_parsed_hierarchy(hierarchy: dict[str, Any]) -> dict[str, dict[str, 
             "Task:",
         ]:
             if t.lower().startswith(prefix.lower()):
-                t = t[len(prefix):].strip()
+                t = t[len(prefix) :].strip()
                 break
         return t.lower().strip()
 
@@ -1036,7 +1075,10 @@ def refresh_backlog(
         "per_issue": [],
     }
 
-    print(f"[refresh] walking existing hierarchy rooted at #{scope_issue_number} in {repo}")
+    print(
+        f"[refresh] walking existing hierarchy rooted at "
+        f"#{scope_issue_number} in {repo}"
+    )
     existing = _walk_existing_hierarchy(repo, scope_issue_number)
     report["summary"]["existing_issues"] = len(existing)
     print(f"[refresh] found {len(existing)} existing issues")
@@ -1052,11 +1094,16 @@ def refresh_backlog(
         # Normalize existing title same way
         norm = title.strip()
         for prefix in [
-            "Project Scope:", "Scope:", "Initiative:", "Epic:",
-            "Story:", "User Story:", "Task:",
+            "Project Scope:",
+            "Scope:",
+            "Initiative:",
+            "Epic:",
+            "Story:",
+            "User Story:",
+            "Task:",
         ]:
             if norm.lower().startswith(prefix.lower()):
-                norm = norm[len(prefix):].strip()
+                norm = norm[len(prefix) :].strip()
                 break
         norm = norm.lower().strip()
 
@@ -1070,7 +1117,9 @@ def refresh_backlog(
         if not item:
             per_issue_record["status"] = "unmatched"
             report["summary"]["unmatched"] += 1
-            print(f"[refresh] #{number} UNMATCHED: '{title}' (no parsed-plan counterpart)")
+            print(
+                f"[refresh] #{number} UNMATCHED: '{title}' (no parsed-plan counterpart)"
+            )
             report["per_issue"].append(per_issue_record)
             continue
 
@@ -1194,7 +1243,7 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         default=True,
-        help="Preview changes without applying (DEFAULT: on).  Pass --apply to disable.",
+        help="Preview changes without applying (DEFAULT: on). Pass --apply to disable.",
     )
     p_refresh.add_argument(
         "--apply",
@@ -1202,7 +1251,9 @@ def main() -> None:
         dest="dry_run",
         help="Apply updates via `gh issue edit` (overrides --dry-run default).",
     )
-    p_refresh.add_argument("--output-dir", default=None, help="Output directory for refresh-report.json")
+    p_refresh.add_argument(
+        "--output-dir", default=None, help="Output directory for refresh-report.json"
+    )
 
     args = parser.parse_args()
     dispatch = {
