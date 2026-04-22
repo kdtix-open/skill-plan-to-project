@@ -872,6 +872,281 @@ def _cmd_create(args: argparse.Namespace) -> None:
     create_all_issues(hierarchy, config, args.repo, output_dir=out)
 
 
+# ---------------------------------------------------------------------------
+# Refresh mode (FR #34 Stage 5) — in-place update existing backlog without
+# creating duplicates.  Intent: patch/upgrade existing issues that were
+# created with an older version of the skill + now need the fixes from
+# Stages 1-4 applied retroactively.
+# ---------------------------------------------------------------------------
+
+
+def _walk_existing_hierarchy(repo: str, scope_issue_number: int) -> list[dict[str, Any]]:
+    """Walk sub-issue tree rooted at scope_issue_number using GH sub-issues REST.
+
+    Returns a flat list of {number, title, level, parent_number} entries for
+    every descendant (+ the root scope itself).  Level is inferred from Issue
+    Type when available, else defaults to a best-guess by depth from root.
+
+    Fail-soft on API errors: a child whose sub-issues fetch fails is reported
+    but traversal continues with siblings.
+    """
+    from scripts.gh_helpers import run_gh
+
+    results: list[dict[str, Any]] = []
+
+    def _infer_level_by_depth(depth: int) -> str:
+        # scope=0, initiative=1, epic=2, story=3, task=4
+        return ["scope", "initiative", "epic", "story", "task"][min(depth, 4)]
+
+    def _fetch_issue(number: int) -> dict[str, Any] | None:
+        # Fetch title + issue-type via `gh issue view`
+        r = run_gh(
+            ["gh", "issue", "view", str(number), "-R", repo,
+             "--json", "number,title,issueType"],
+            check=False,
+        )
+        if r.returncode != 0:
+            return None
+        try:
+            return json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return None
+
+    def _fetch_sub_issues(number: int) -> list[int]:
+        r = run_gh(
+            ["gh", "api", f"/repos/{repo}/issues/{number}/sub_issues"],
+            check=False,
+        )
+        if r.returncode != 0:
+            return []
+        try:
+            data = json.loads(r.stdout)
+            return [item["number"] for item in data if "number" in item]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return []
+
+    def _recurse(number: int, depth: int, parent_number: int | None) -> None:
+        issue = _fetch_issue(number)
+        if not issue:
+            return
+        level_by_type = {
+            "Project Scope": "scope",
+            "Initiative": "initiative",
+            "Epic": "epic",
+            "User Story": "story",
+            "Task": "task",
+        }
+        issue_type_name = (issue.get("issueType") or {}).get("name", "")
+        level = level_by_type.get(issue_type_name) or _infer_level_by_depth(depth)
+        results.append({
+            "number": issue["number"],
+            "title": issue["title"],
+            "level": level,
+            "parent_number": parent_number,
+        })
+        for child_num in _fetch_sub_issues(number):
+            _recurse(child_num, depth + 1, number)
+
+    _recurse(scope_issue_number, 0, None)
+    return results
+
+
+def _flatten_parsed_hierarchy(hierarchy: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Flatten parse_plan() output into a {normalized_title: item} map.
+
+    Normalized title is lowercased + stripped of leading level-prefix + meta
+    suffixes so matching against existing issue titles is robust.
+    """
+    items_by_title: dict[str, dict[str, Any]] = {}
+
+    def _normalize(title: str) -> str:
+        # Strip common prefixes that may or may not be present in GH titles:
+        # "Project Scope: ", "Initiative: ", "Epic: ", "Story: ", "Task: "
+        t = title.strip()
+        for prefix in [
+            "Project Scope:",
+            "Scope:",
+            "Initiative:",
+            "Epic:",
+            "Story:",
+            "User Story:",
+            "Task:",
+        ]:
+            if t.lower().startswith(prefix.lower()):
+                t = t[len(prefix):].strip()
+                break
+        return t.lower().strip()
+
+    def _register(item: dict[str, Any], level: str) -> None:
+        norm = _normalize(item.get("title", ""))
+        if norm:
+            items_by_title[norm] = {**item, "level": level}
+
+    if hierarchy.get("scope"):
+        _register(hierarchy["scope"], "scope")
+    for init in hierarchy.get("initiatives", []) or []:
+        _register(init, "initiative")
+    for epic in hierarchy.get("epics", []) or []:
+        _register(epic, "epic")
+    for story in hierarchy.get("stories", []) or []:
+        _register(story, "story")
+    for task in hierarchy.get("tasks", []) or []:
+        _register(task, "task")
+
+    return items_by_title
+
+
+def refresh_backlog(
+    plan_path: str,
+    repo: str,
+    scope_issue_number: int,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Patch/upgrade existing backlog issues using the current skill's
+    template + parser.  Does NOT create or remove any issues.
+
+    FR #34 Stage 5.  Primary operator use case (2026-04-21 direction):
+    "correct existing issues created with the older /plan-to-project skill,
+    using the corrected /plan-to-project without creating new or duplicated
+    issues."
+
+    Algorithm:
+      1. Parse the source plan (same parse_plan() used at create time).
+      2. Walk the existing GH sub-issue hierarchy rooted at scope_issue_number.
+      3. Match each existing issue to a parsed-plan item by normalized title.
+      4. Re-render the body via generate_body() using the parsed item.
+      5. Compare to existing body; if different, emit (dry_run) or apply
+         (via gh issue edit) the update.
+      6. Report a summary: matched / unmatched / updated / unchanged.
+    """
+    from scripts.gh_helpers import get_issue_body, update_issue_body
+
+    report: dict[str, Any] = {
+        "scope_issue_number": scope_issue_number,
+        "plan_path": plan_path,
+        "dry_run": dry_run,
+        "summary": {
+            "existing_issues": 0,
+            "matched": 0,
+            "unmatched": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "failed": 0,
+        },
+        "per_issue": [],
+    }
+
+    print(f"[refresh] walking existing hierarchy rooted at #{scope_issue_number} in {repo}")
+    existing = _walk_existing_hierarchy(repo, scope_issue_number)
+    report["summary"]["existing_issues"] = len(existing)
+    print(f"[refresh] found {len(existing)} existing issues")
+
+    hierarchy = parse_plan(plan_path)
+    items_by_title = _flatten_parsed_hierarchy(hierarchy)
+    print(f"[refresh] parsed {len(items_by_title)} items from {plan_path}")
+
+    for entry in existing:
+        number = entry["number"]
+        title = entry["title"]
+        level = entry["level"]
+        # Normalize existing title same way
+        norm = title.strip()
+        for prefix in [
+            "Project Scope:", "Scope:", "Initiative:", "Epic:",
+            "Story:", "User Story:", "Task:",
+        ]:
+            if norm.lower().startswith(prefix.lower()):
+                norm = norm[len(prefix):].strip()
+                break
+        norm = norm.lower().strip()
+
+        item = items_by_title.get(norm)
+        per_issue_record: dict[str, Any] = {
+            "number": number,
+            "title": title,
+            "level": level,
+        }
+
+        if not item:
+            per_issue_record["status"] = "unmatched"
+            report["summary"]["unmatched"] += 1
+            print(f"[refresh] #{number} UNMATCHED: '{title}' (no parsed-plan counterpart)")
+            report["per_issue"].append(per_issue_record)
+            continue
+
+        report["summary"]["matched"] += 1
+        per_issue_record["matched_plan_title"] = item.get("title", "")
+
+        try:
+            current_body = get_issue_body(repo, number)
+        except Exception as exc:  # noqa: BLE001 — we deliberately fail-soft per-issue
+            per_issue_record["status"] = "failed"
+            per_issue_record["error"] = f"get_issue_body: {exc}"
+            report["summary"]["failed"] += 1
+            print(f"[refresh] #{number} FAILED to fetch body: {exc}")
+            report["per_issue"].append(per_issue_record)
+            continue
+
+        new_body = generate_body(item, level)
+
+        if current_body.strip() == new_body.strip():
+            per_issue_record["status"] = "unchanged"
+            report["summary"]["unchanged"] += 1
+            print(f"[refresh] #{number} unchanged")
+            report["per_issue"].append(per_issue_record)
+            continue
+
+        per_issue_record["status"] = "updated" if not dry_run else "would-update"
+        per_issue_record["diff_chars_before"] = len(current_body)
+        per_issue_record["diff_chars_after"] = len(new_body)
+
+        if dry_run:
+            report["summary"]["updated"] += 1
+            print(
+                f"[refresh] #{number} WOULD UPDATE "
+                f"({len(current_body)}→{len(new_body)} chars) — dry-run"
+            )
+        else:
+            try:
+                update_issue_body(repo, number, new_body)
+                report["summary"]["updated"] += 1
+                print(
+                    f"[refresh] #{number} UPDATED "
+                    f"({len(current_body)}→{len(new_body)} chars)"
+                )
+            except Exception as exc:  # noqa: BLE001
+                per_issue_record["status"] = "failed"
+                per_issue_record["error"] = f"update_issue_body: {exc}"
+                report["summary"]["failed"] += 1
+                print(f"[refresh] #{number} FAILED to update: {exc}")
+
+        report["per_issue"].append(per_issue_record)
+
+    s = report["summary"]
+    print(
+        f"[refresh] DONE — {s['existing_issues']} issues | "
+        f"{s['matched']} matched / {s['unmatched']} unmatched | "
+        f"{s['updated']} {'would-update' if dry_run else 'updated'} / "
+        f"{s['unchanged']} unchanged / {s['failed']} failed"
+    )
+    return report
+
+
+def _cmd_refresh(args: argparse.Namespace) -> None:
+    out = Path(args.output_dir) if args.output_dir else None
+    report = refresh_backlog(
+        plan_path=args.plan,
+        repo=args.repo,
+        scope_issue_number=args.scope_issue,
+        dry_run=args.dry_run,
+    )
+    if out:
+        out.mkdir(parents=True, exist_ok=True)
+        report_path = out / "refresh-report.json"
+        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"[refresh] report written to {report_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Convert a markdown plan into GitHub issues."
@@ -896,11 +1171,45 @@ def main() -> None:
     p_create.add_argument("--project", required=True, type=int)
     p_create.add_argument("--output-dir", default=None, help="Output directory")
 
+    p_refresh = sub.add_parser(
+        "refresh",
+        help=(
+            "Patch/upgrade an existing backlog in-place using the current "
+            "skill's template + parser (FR #34 Stage 5).  Does NOT create "
+            "or remove any issues.  Walks the sub-issue tree rooted at "
+            "--scope-issue; for each existing issue found, re-renders its "
+            "body from the parsed plan + applies via `gh issue edit`."
+        ),
+    )
+    p_refresh.add_argument("--plan", required=True, help="Source plan .md file")
+    p_refresh.add_argument("--repo", required=True, help="owner/name")
+    p_refresh.add_argument(
+        "--scope-issue",
+        required=True,
+        type=int,
+        dest="scope_issue",
+        help="GitHub issue number of the Project Scope to refresh (walks sub-issues)",
+    )
+    p_refresh.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help="Preview changes without applying (DEFAULT: on).  Pass --apply to disable.",
+    )
+    p_refresh.add_argument(
+        "--apply",
+        action="store_false",
+        dest="dry_run",
+        help="Apply updates via `gh issue edit` (overrides --dry-run default).",
+    )
+    p_refresh.add_argument("--output-dir", default=None, help="Output directory for refresh-report.json")
+
     args = parser.parse_args()
     dispatch = {
         "parse": _cmd_parse,
         "preflight": _cmd_preflight,
         "create": _cmd_create,
+        "refresh": _cmd_refresh,
     }
     try:
         dispatch[args.command](args)
