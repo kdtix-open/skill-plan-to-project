@@ -26,55 +26,117 @@ def _generate_test_keypair(tmp_path: Path) -> Path:
     return path
 
 
+def _clear_all_env(monkeypatch):
+    """Clear every known config env var so each test starts clean."""
+    for name in (
+        "GITHUB_APP_ID",
+        "GITHUB_APP_PRIVATE_KEY",
+        "SDLCA_APP_ID",
+        "SDLCA_APP_PRIVATE_KEY_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 class TestLoadConfig:
-    def test_load_config_from_env(self, tmp_path, monkeypatch):
+    def test_load_config_from_env_legacy_path(self, tmp_path, monkeypatch):
+        _clear_all_env(monkeypatch)
         key = _generate_test_keypair(tmp_path)
         monkeypatch.setenv("SDLCA_APP_ID", "12345")
         monkeypatch.setenv("SDLCA_APP_PRIVATE_KEY_PATH", str(key))
-        # Avoid finding a user ~/.sdlca/app.conf during tests
         monkeypatch.setattr(mint_app_token.Path, "home", lambda: tmp_path)
 
-        app_id, path = mint_app_token._load_config()
+        app_id, pem_bytes, source = mint_app_token._load_config()
         assert app_id == "12345"
-        assert path == key
+        assert b"BEGIN" in pem_bytes
+        assert "env(key_path)" in source
+
+    def test_load_config_from_env_github_names_inline_pem(
+        self, tmp_path, monkeypatch
+    ):
+        """FR #49 patch: GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY take precedence."""
+        _clear_all_env(monkeypatch)
+        key_path = _generate_test_keypair(tmp_path)
+        pem_content = key_path.read_text()
+        monkeypatch.setenv("GITHUB_APP_ID", "12345")
+        monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", pem_content)
+        monkeypatch.setattr(mint_app_token.Path, "home", lambda: tmp_path)
+
+        app_id, pem_bytes, source = mint_app_token._load_config()
+        assert app_id == "12345"
+        assert b"BEGIN" in pem_bytes
+        assert "env(inline_pem)" in source
+
+    def test_load_config_from_bridge_env_credentials(self, tmp_path, monkeypatch):
+        """FR #49 patch: falls back to ~/.sdlca/bridge/.env.credentials."""
+        _clear_all_env(monkeypatch)
+        key_path = _generate_test_keypair(tmp_path)
+        pem_content = key_path.read_text()
+        bridge_dir = tmp_path / ".sdlca" / "bridge"
+        bridge_dir.mkdir(parents=True)
+        creds = bridge_dir / ".env.credentials"
+        creds.write_text(
+            "GITHUB_APP_SLUG=test-app-slug\n"
+            'GITHUB_APP_ID="12345"\n'
+            f'GITHUB_APP_PRIVATE_KEY="{pem_content}"\n'
+        )
+        monkeypatch.setattr(mint_app_token.Path, "home", lambda: tmp_path)
+
+        app_id, pem_bytes, source = mint_app_token._load_config()
+        assert app_id == "12345"
+        assert b"BEGIN" in pem_bytes
+        assert ".env.credentials(app_id)" in source
+        assert ".env.credentials(inline_pem)" in source
 
     def test_load_config_from_conf_file(self, tmp_path, monkeypatch):
+        _clear_all_env(monkeypatch)
         key = _generate_test_keypair(tmp_path)
         (tmp_path / ".sdlca").mkdir()
         conf = tmp_path / ".sdlca" / "app.conf"
         conf.write_text(
             f'SDLCA_APP_ID="99999"\nSDLCA_APP_PRIVATE_KEY_PATH="{key}"\n'
         )
-        monkeypatch.delenv("SDLCA_APP_ID", raising=False)
-        monkeypatch.delenv("SDLCA_APP_PRIVATE_KEY_PATH", raising=False)
         monkeypatch.setattr(mint_app_token.Path, "home", lambda: tmp_path)
 
-        app_id, path = mint_app_token._load_config()
+        app_id, pem_bytes, source = mint_app_token._load_config()
         assert app_id == "99999"
-        assert path == key
+        assert b"BEGIN" in pem_bytes
+        assert "app.conf" in source
 
     def test_load_config_missing_app_id_exits(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv("SDLCA_APP_ID", raising=False)
+        _clear_all_env(monkeypatch)
         monkeypatch.setattr(mint_app_token.Path, "home", lambda: tmp_path)
         with pytest.raises(SystemExit) as exc_info:
             mint_app_token._load_config()
         assert exc_info.value.code == 2
         captured = capsys.readouterr()
-        assert "SDLCA_APP_ID not set" in captured.err
+        assert "App ID not found" in captured.err
 
-    def test_load_config_missing_key_path_exits(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setenv("SDLCA_APP_ID", "12345")
-        monkeypatch.delenv("SDLCA_APP_PRIVATE_KEY_PATH", raising=False)
+    def test_load_config_missing_key_exits(self, tmp_path, monkeypatch, capsys):
+        _clear_all_env(monkeypatch)
+        monkeypatch.setenv("GITHUB_APP_ID", "12345")
         monkeypatch.setattr(mint_app_token.Path, "home", lambda: tmp_path)
         with pytest.raises(SystemExit) as exc_info:
             mint_app_token._load_config()
         assert exc_info.value.code == 2
         captured = capsys.readouterr()
-        assert "SDLCA_APP_PRIVATE_KEY_PATH not set" in captured.err
+        assert "App private key not found" in captured.err
+
+    def test_load_config_invalid_pem_exits(self, tmp_path, monkeypatch, capsys):
+        """Non-PEM content in GITHUB_APP_PRIVATE_KEY is rejected."""
+        _clear_all_env(monkeypatch)
+        monkeypatch.setenv("GITHUB_APP_ID", "12345")
+        monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", "not a real key")
+        monkeypatch.setattr(mint_app_token.Path, "home", lambda: tmp_path)
+        with pytest.raises(SystemExit) as exc_info:
+            mint_app_token._load_config()
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "does not look like PEM" in captured.err
 
     def test_load_config_key_path_not_found_exits(
         self, tmp_path, monkeypatch, capsys
     ):
+        _clear_all_env(monkeypatch)
         monkeypatch.setenv("SDLCA_APP_ID", "12345")
         monkeypatch.setenv(
             "SDLCA_APP_PRIVATE_KEY_PATH", str(tmp_path / "does-not-exist.pem")
@@ -93,12 +155,11 @@ class TestSignAppJwt:
         from cryptography.hazmat.primitives import serialization
 
         key_path = _generate_test_keypair(tmp_path)
-        token = mint_app_token._sign_app_jwt("12345", key_path)
+        pem_bytes = key_path.read_bytes()
+        token = mint_app_token._sign_app_jwt("12345", pem_bytes)
 
         # Verify with the corresponding public key
-        priv = serialization.load_pem_private_key(
-            key_path.read_bytes(), password=None
-        )
+        priv = serialization.load_pem_private_key(pem_bytes, password=None)
         pub = priv.public_key().public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,

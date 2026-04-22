@@ -9,16 +9,27 @@ org's installation.  Prints the token to stdout.
 Primary use case: unblock plan-to-project + SBR skill runs against
 Enterprise-owned orgs where personal fine-grained PATs cannot combine the
 required scopes.  The App's installation token inherits whatever permissions
-the App was granted on the org — in the `projectit-ai-repo-orchestrator`
-case, that's a superset of what the skill needs (Issues r/w, Contents r/w,
-Projects r/w, Issue types r/w, Administration r, Copilot metrics r, etc.).
+the App was granted on the org — typically a superset of what the skill
+needs (Issues r/w, Contents r/w, Projects r/w, Issue types r/w, etc.).
 
-Configuration (env vars or ~/.sdlca/app.conf):
+Configuration (checked in order):
 
-    SDLCA_APP_ID                      GitHub App's numeric ID (required)
-    SDLCA_APP_PRIVATE_KEY_PATH        Path to .pem file (required)
-    SDLCA_APP_INSTALLATION_ID_<ORG>   Optional per-org installation ID.
-                                      Auto-discovered if unset.
+  1. Env vars: GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY (inline PEM)
+     — the names already used in ~/.sdlca/bridge/.env.credentials by the
+     bridge runtime.  Preferred — no separate config needed.
+  2. Env vars: SDLCA_APP_ID / SDLCA_APP_PRIVATE_KEY_PATH (file path)
+     — legacy names; still supported for operators who prefer a separate
+     .pem on disk.
+  3. File: ~/.sdlca/app.conf (shell KEY=VALUE format) — fallback.
+  4. File: ~/.sdlca/bridge/.env.credentials — auto-sourced if none of
+     the above are set (bridge's existing credentials file).
+
+    GITHUB_APP_ID / SDLCA_APP_ID               GitHub App's numeric ID
+    GITHUB_APP_PRIVATE_KEY                     PEM content (inline env var;
+                                               preferred)
+    SDLCA_APP_PRIVATE_KEY_PATH                 Path to .pem file (alt)
+    SDLCA_APP_INSTALLATION_ID_<ORG>            Optional per-org installation ID.
+                                               Auto-discovered if unset.
 
 Usage:
 
@@ -51,73 +62,185 @@ except ImportError:  # pragma: no cover
     sys.exit(2)
 
 
-def _load_config() -> tuple[str, Path]:
-    """Load App ID + private key path from env / ~/.sdlca/app.conf.
+def _parse_shell_env_file(path: Path) -> dict[str, str]:
+    """Parse a bash-style KEY=VALUE env file into a dict.
 
-    Returns (app_id, private_key_path).
-    Raises SystemExit with helpful message if config incomplete.
+    Handles:
+    - Simple KEY=value
+    - KEY="value with spaces"
+    - KEY='value with spaces'
+    - Multi-line values when wrapped in double quotes (PEM keys)
+    - Leading `export ` prefix
+    - Blank lines + lines starting with `#`
+
+    Does NOT evaluate shell expressions (safer than `source`ing).
     """
-    app_id = os.environ.get("SDLCA_APP_ID", "").strip()
+    if not path.is_file():
+        return {}
+    text = path.read_text(encoding="utf-8")
+    result: dict[str, str] = {}
+    i = 0
+    lines = text.splitlines(keepends=False)
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.strip()
+        i += 1
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].lstrip()
+        if "=" not in stripped:
+            continue
+        key, val = stripped.split("=", 1)
+        key = key.strip()
+        val = val  # keep whitespace around quotes as-is for now
+        # If value starts with `"` but doesn't close on the same line,
+        # collect subsequent lines until we find the closing `"`.
+        if val.startswith('"') and not (
+            val.endswith('"') and len(val) > 1 and val[-2] != "\\"
+        ):
+            buf = [val[1:]]  # strip opening quote
+            while i < len(lines):
+                nxt = lines[i]
+                i += 1
+                if nxt.endswith('"'):
+                    buf.append(nxt[:-1])
+                    break
+                buf.append(nxt)
+            val = "\n".join(buf)
+        elif val.startswith('"') and val.endswith('"') and len(val) >= 2:
+            val = val[1:-1]
+        elif val.startswith("'") and val.endswith("'") and len(val) >= 2:
+            val = val[1:-1]
+        else:
+            val = val.strip()
+        result[key] = val
+    return result
+
+
+def _load_config() -> tuple[str, bytes, str]:
+    """Resolve App ID + private-key bytes from one of several sources.
+
+    Resolution order:
+      1. Env: GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY (inline PEM; preferred)
+      2. Env: SDLCA_APP_ID + SDLCA_APP_PRIVATE_KEY_PATH (file path)
+      3. File: ~/.sdlca/app.conf
+      4. File: ~/.sdlca/bridge/.env.credentials (the bridge's own credentials)
+
+    Returns (app_id, private_key_pem_bytes, source_desc).
+
+    Raises SystemExit(2) with helpful remediation when none resolve.
+    """
+    app_id = (
+        os.environ.get("GITHUB_APP_ID", "").strip()
+        or os.environ.get("SDLCA_APP_ID", "").strip()
+    )
+    inline_pem = os.environ.get("GITHUB_APP_PRIVATE_KEY", "").strip()
     key_path_raw = os.environ.get("SDLCA_APP_PRIVATE_KEY_PATH", "").strip()
 
-    # Fallback: ~/.sdlca/app.conf (shell-style KEY=VALUE)
-    conf_path = Path.home() / ".sdlca" / "app.conf"
-    if (not app_id or not key_path_raw) and conf_path.is_file():
-        for raw_line in conf_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            k = k.strip()
-            v = v.strip().strip('"').strip("'")
-            if k == "SDLCA_APP_ID" and not app_id:
+    source_desc_parts: list[str] = []
+    if app_id:
+        source_desc_parts.append("env(app_id)")
+    if inline_pem:
+        source_desc_parts.append("env(inline_pem)")
+    if key_path_raw:
+        source_desc_parts.append("env(key_path)")
+
+    if not app_id or not (inline_pem or key_path_raw):
+        # Fallback 1: ~/.sdlca/app.conf
+        conf_path = Path.home() / ".sdlca" / "app.conf"
+        for k, v in _parse_shell_env_file(conf_path).items():
+            if k == "GITHUB_APP_ID" and not app_id:
                 app_id = v
+                source_desc_parts.append("app.conf(app_id)")
+            elif k == "SDLCA_APP_ID" and not app_id:
+                app_id = v
+                source_desc_parts.append("app.conf(app_id)")
+            elif k == "GITHUB_APP_PRIVATE_KEY" and not inline_pem:
+                inline_pem = v
+                source_desc_parts.append("app.conf(inline_pem)")
             elif k == "SDLCA_APP_PRIVATE_KEY_PATH" and not key_path_raw:
                 key_path_raw = v
+                source_desc_parts.append("app.conf(key_path)")
+
+    if not app_id or not (inline_pem or key_path_raw):
+        # Fallback 2: ~/.sdlca/bridge/.env.credentials — the bridge's
+        # existing credentials file already has GITHUB_APP_ID +
+        # GITHUB_APP_PRIVATE_KEY set by `sdlca-bridge install`.
+        creds_path = Path.home() / ".sdlca" / "bridge" / ".env.credentials"
+        for k, v in _parse_shell_env_file(creds_path).items():
+            if k == "GITHUB_APP_ID" and not app_id:
+                app_id = v
+                source_desc_parts.append(".env.credentials(app_id)")
+            elif k == "GITHUB_APP_PRIVATE_KEY" and not inline_pem:
+                inline_pem = v
+                source_desc_parts.append(".env.credentials(inline_pem)")
 
     if not app_id:
         print(
-            "[mint-app-token] ERROR: SDLCA_APP_ID not set.\n"
-            "  Get the App ID from the App's settings page:\n"
-            "  https://github.com/organizations/<org>/settings/apps/<app-slug>\n"
-            "  Set via env (`export SDLCA_APP_ID=...`) or ~/.sdlca/app.conf",
+            "[mint-app-token] ERROR: App ID not found.\n"
+            "  Checked: GITHUB_APP_ID / SDLCA_APP_ID env vars,\n"
+            "           ~/.sdlca/app.conf,\n"
+            "           ~/.sdlca/bridge/.env.credentials.\n"
+            "  Set GITHUB_APP_ID (preferred) or SDLCA_APP_ID via one of the above.",
             file=sys.stderr,
         )
         sys.exit(2)
-    if not key_path_raw:
+
+    # Resolve PEM bytes — inline env var takes precedence over file path.
+    pem_bytes: bytes
+    if inline_pem:
+        pem_bytes = inline_pem.encode("utf-8")
+    elif key_path_raw:
+        key_path = Path(os.path.expanduser(key_path_raw))
+        if not key_path.is_file():
+            print(
+                f"[mint-app-token] ERROR: private key not found at {key_path}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        pem_bytes = key_path.read_bytes()
+    else:
         print(
-            "[mint-app-token] ERROR: SDLCA_APP_PRIVATE_KEY_PATH not set.\n"
-            "  Download the App's private key (.pem) from the App settings page\n"
-            "  and save under ~/.sdlca/ with chmod 0600.\n"
-            "  Set via env or ~/.sdlca/app.conf.",
+            "[mint-app-token] ERROR: App private key not found.\n"
+            "  Checked: GITHUB_APP_PRIVATE_KEY env var (inline PEM),\n"
+            "           SDLCA_APP_PRIVATE_KEY_PATH env var (file path),\n"
+            "           ~/.sdlca/app.conf,\n"
+            "           ~/.sdlca/bridge/.env.credentials.\n"
+            "  Set GITHUB_APP_PRIVATE_KEY (preferred) or\n"
+            "  SDLCA_APP_PRIVATE_KEY_PATH via one of the above.",
             file=sys.stderr,
         )
         sys.exit(2)
 
-    key_path = Path(os.path.expanduser(key_path_raw))
-    if not key_path.is_file():
+    # Simple sanity: the PEM should start with BEGIN marker.
+    if b"BEGIN" not in pem_bytes[:40]:
         print(
-            f"[mint-app-token] ERROR: private key not found at {key_path}",
+            "[mint-app-token] ERROR: resolved App private key does not look "
+            "like PEM (no BEGIN marker near start).  Check the env var /"
+            "file content.",
             file=sys.stderr,
         )
         sys.exit(2)
-    return app_id, key_path
+
+    return app_id, pem_bytes, " + ".join(source_desc_parts)
 
 
-def _sign_app_jwt(app_id: str, private_key_path: Path) -> str:
+def _sign_app_jwt(app_id: str, private_key_pem: bytes) -> str:
     """Sign a short-lived (~10 min) JWT authenticating as the App itself.
 
     Clock-skew tolerance: -60 seconds on iat.
     Expiry: +540 seconds (9 min); GitHub max is 10 min.
+
+    Accepts raw PEM bytes (either inline from env or read from file by caller).
     """
-    pem = private_key_path.read_bytes()
     now = _dt.datetime.now(tz=_dt.timezone.utc)
     payload = {
         "iat": int((now - _dt.timedelta(seconds=60)).timestamp()),
         "exp": int((now + _dt.timedelta(seconds=540)).timestamp()),
         "iss": app_id,
     }
-    return _pyjwt.encode(payload, pem, algorithm="RS256")
+    return _pyjwt.encode(payload, private_key_pem, algorithm="RS256")
 
 
 def _http_request(
@@ -176,9 +299,9 @@ def _mint_installation_token(app_jwt: str, installation_id: int) -> dict:
 
 
 def mint_for_org(org: str) -> dict:
-    """High-level: returns {'token', 'expires_at', 'installation_id'} dict."""
-    app_id, key_path = _load_config()
-    app_jwt = _sign_app_jwt(app_id, key_path)
+    """High-level: returns {'token', 'expires_at', 'installation_id', 'source'} dict."""
+    app_id, pem_bytes, source_desc = _load_config()
+    app_jwt = _sign_app_jwt(app_id, pem_bytes)
 
     env_key = f"SDLCA_APP_INSTALLATION_ID_{org.upper().replace('-', '_')}"
     explicit = os.environ.get(env_key, "").strip()
@@ -191,6 +314,7 @@ def mint_for_org(org: str) -> dict:
         "token": resp["token"],
         "expires_at": resp.get("expires_at", ""),
         "installation_id": installation_id,
+        "source": source_desc,
     }
 
 
