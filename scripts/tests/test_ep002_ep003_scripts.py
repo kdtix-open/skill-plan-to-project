@@ -742,6 +742,130 @@ class TestCheckIssue:
         assert len(p0_gaps) == 0
 
 
+class TestP0_4PlaceholderScanner:
+    """FR #34 Stage 1: detect unreplaced template [PLACEHOLDER] strings."""
+
+    def test_detects_uppercase_placeholder_criterion(self):
+        body = "## Success Criteria\n\n- [ ] [CRITERION 1]\n- [ ] [CRITERION 2]\n"
+        gaps = compliance_check.check_issue(1, "Test", body, "story")
+        p0_4 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert len(p0_4) == 1
+        assert "[CRITERION 1]" in p0_4[0]["placeholders"]
+        assert "[CRITERION 2]" in p0_4[0]["placeholders"]
+
+    def test_detects_item_placeholder(self):
+        body = "## Out of Scope\n\n- [ITEM 1]\n- [ITEM 2]\n"
+        gaps = compliance_check.check_issue(1, "Test", body, "story")
+        p0_4 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert len(p0_4) == 1
+        assert "[ITEM 1]" in p0_4[0]["placeholders"]
+
+    def test_detects_descriptive_placeholder(self):
+        body = (
+            "## Business Problem & Current State\n\n"
+            "[Describe the problem being solved and why the current approach is insufficient]\n"
+        )
+        gaps = compliance_check.check_issue(1, "Test", body, "scope")
+        p0_4 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert len(p0_4) == 1
+        placeholders = p0_4[0]["placeholders"]
+        assert any("Describe the problem" in p for p in placeholders)
+
+    def test_detects_project_specific_criterion_placeholder(self):
+        body = (
+            "## I Know I Am Done When\n\n"
+            "- [ ] [PROJECT-SPECIFIC CRITERION]\n"
+            "- [ ] TDD followed: failing test written BEFORE implementation\n"
+        )
+        gaps = compliance_check.check_issue(1, "Test", body, "scope")
+        p0_4 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert len(p0_4) == 1
+
+    def test_no_false_positive_on_checkbox(self):
+        body = "## Done When\n- [ ] Task 1\n- [x] Task 2\n- [X] Task 3\n"
+        gaps = compliance_check.check_issue(1, "Test", body, "story")
+        p0_4 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert len(p0_4) == 0, f"False positive: {p0_4}"
+
+    def test_no_false_positive_on_clean_body(self):
+        # A body with real content + no placeholders should not trip P0-4
+        body = (
+            "## Assumptions\n"
+            "- We assume the operator has gh CLI configured\n\n"
+            "## MoSCoW Classification\n"
+            "| Priority | Item |\n"
+            "|----------|------|\n"
+            "| Must Have | Label-set creation |\n\n"
+            "## I Know I Am Done When\n\n"
+            "TDD followed: failing test written BEFORE implementation\n\n"
+            "### Security/Compliance\n- [ ] Input validated\n"
+        )
+        gaps = compliance_check.check_issue(1, "Story", body, "story")
+        p0_4 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert len(p0_4) == 0, f"False positive on clean body: {p0_4}"
+
+    def test_placeholder_gap_description_includes_count(self):
+        body = (
+            "[CRITERION 1]\n[CRITERION 2]\n[ITEM 1]\n"
+            "[ASSUMPTION 1]\n[ASSUMPTION 2]\n[DESCRIPTION]\n"
+        )
+        gaps = compliance_check.check_issue(1, "Test", body, "story")
+        p0_4 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert len(p0_4) == 1
+        # 6 distinct placeholders → description should say "6 unreplaced"
+        assert "6 unreplaced" in p0_4[0]["description"]
+
+
+class TestPlaceholderGate:
+    """FR #34 Stage 1: --allow-placeholders gate for run_compliance_check."""
+
+    def test_gate_fails_when_placeholders_present_and_not_allowed(self, mocker, tmp_path):
+        # Mock the GH API calls
+        mocker.patch("scripts.compliance_check.get_issue_body", return_value="[CRITERION 1]")
+        mocker.patch("scripts.compliance_check.get_issue_labels", return_value=[])
+        mocker.patch("scripts.compliance_check.update_issue_body")
+        manifest = {
+            "Test Scope": {"number": 1, "level": "scope", "title": "Test Scope"},
+        }
+        report = compliance_check.run_compliance_check(
+            manifest, "owner/repo", output_dir=tmp_path, allow_placeholders=False
+        )
+        assert report["placeholder_gate"] == "failed"
+        assert report["summary"]["p0_placeholders"] >= 1
+
+    def test_gate_passes_when_placeholders_allowed(self, mocker, tmp_path):
+        mocker.patch("scripts.compliance_check.get_issue_body", return_value="[CRITERION 1]")
+        mocker.patch("scripts.compliance_check.get_issue_labels", return_value=[])
+        mocker.patch("scripts.compliance_check.update_issue_body")
+        manifest = {
+            "Test Scope": {"number": 1, "level": "scope", "title": "Test Scope"},
+        }
+        report = compliance_check.run_compliance_check(
+            manifest, "owner/repo", output_dir=tmp_path, allow_placeholders=True
+        )
+        assert report["placeholder_gate"] == "passed"
+
+    def test_gate_passes_when_no_placeholders_present(self, mocker, tmp_path):
+        clean_body = (
+            "## Assumptions\n- Assumption\n\n"
+            "## MoSCoW Classification\n| Must Have | X |\n\n"
+            "## I Know I Am Done When\n\n"
+            "TDD followed: failing test written BEFORE implementation\n\n"
+            "### Security/Compliance\n- [ ] OK\n"
+        )
+        mocker.patch("scripts.compliance_check.get_issue_body", return_value=clean_body)
+        mocker.patch("scripts.compliance_check.get_issue_labels", return_value=[])
+        mocker.patch("scripts.compliance_check.update_issue_body")
+        manifest = {
+            "Test Story": {"number": 1, "level": "story", "title": "Read the docs"},
+        }
+        report = compliance_check.run_compliance_check(
+            manifest, "owner/repo", output_dir=tmp_path, allow_placeholders=False
+        )
+        assert report["placeholder_gate"] == "passed"
+        assert report["summary"]["p0_placeholders"] == 0
+
+
 class TestAutofixBody:
     def test_autofix_injects_tdd_after_done_when(self):
         body = "## I Know I Am Done When\n\n- [ ] Something\n"
