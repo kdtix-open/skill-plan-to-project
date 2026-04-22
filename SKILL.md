@@ -18,12 +18,42 @@ GitHub Project backlog in a single workflow.
 ## Prerequisites
 
 - `gh` CLI authenticated (`gh auth status`). If not: `gh auth login`
-- Python 3.9+ available
+- Python 3.9+ available (`PyJWT` + `cryptography` required for the App-token
+  helper; the rest of the skill has no Python deps beyond stdlib)
 - Target GitHub org has Issue Types configured: `Project Scope`, `Initiative`, `Epic`,
-  `User Story`, `Task`
+  `User Story`, `Task` — or pass `--auto-create-issue-types` (FR #46) to have
+  preflight create them via GraphQL
 - Target GitHub Project V2 has fields: `Priority` (P0/P1/P2), `Size` (XS/S/M/L/XL),
   `Status` (Backlog/In Progress/Done/Blocked)
 - Input plan follows KDTIX markdown structure (see [plan-format.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/plan-format.md))
+  — and per FR #45, uses the full subsection schema by default
+
+### Auth: personal PAT vs GitHub App installation token (FR #49)
+
+For **Enterprise-owned orgs**, personal fine-grained PATs cannot combine user-scoped
+permissions (e.g. "Copilot Requests") with Enterprise-org-scoped permissions
+(e.g. `read:project` + `project`). The correct pattern for automation against
+Enterprise-owned orgs is a **GitHub App installation token**.
+
+The skill ships a helper:
+
+```bash
+# One-time setup
+export SDLCA_APP_ID=<App-ID>
+export SDLCA_APP_PRIVATE_KEY_PATH=~/.sdlca/<app-slug>.pem
+chmod 0600 $SDLCA_APP_PRIVATE_KEY_PATH
+
+# Mint 1-hour installation token (auto-discovers installation for the org)
+source scripts/use-app-token.sh kdtix-open
+# Exports GH_TOKEN + COPILOT_GITHUB_TOKEN (same value, both aliases set)
+
+# Skill now works against Enterprise-owned org repos
+python3 -m scripts.create_issues preflight \
+  --org kdtix-open --repo kdtix-open/agent-project-queue --project 7
+```
+
+Alternative for non-Enterprise orgs: personal fine-grained PAT or `gh auth login`
+with `read:project` + `project` scopes continues to work.
 
 ## Inputs
 
