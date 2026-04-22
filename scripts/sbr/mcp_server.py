@@ -45,11 +45,13 @@ try:
     from mcp.server.auth.provider import AccessToken, TokenVerifier
     from mcp.server.auth.settings import AuthSettings
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
 except ImportError:  # pragma: no cover — import-time graceful failure
     AccessToken = None  # type: ignore[assignment, misc]
     AuthSettings = None  # type: ignore[assignment, misc]
     FastMCP = None  # type: ignore[assignment]
     TokenVerifier = object  # type: ignore[assignment, misc]
+    TransportSecuritySettings = None  # type: ignore[assignment, misc]
 
 from scripts.sbr.api import SessionManager, WriteBacker
 
@@ -91,6 +93,7 @@ class BearerTokenVerifier:
 def _build_server(
     auth_token: str | None = None,
     resource_server_url: str = "http://127.0.0.1:3456/",
+    allowed_hosts: list[str] | None = None,
 ) -> FastMCP:  # type: ignore[name-defined]
     """Construct the FastMCP server + register the 11 canonical tools.
 
@@ -106,6 +109,12 @@ def _build_server(
             AuthSettings for OAuth protected-resource metadata.  Defaults
             to localhost for local dev; override to the hosted URL in
             production (e.g. "https://dev.projectit.ai/mcp/sbr/").
+        allowed_hosts: List of Host header values that pass FastMCP's
+            DNS-rebinding protection.  Defaults to
+            ["127.0.0.1:*", "localhost:*"] when unset; override to include
+            public hostnames behind a reverse proxy (e.g.
+            ["dev.projectit.ai", "127.0.0.1:*"]).  Empty list = protection
+            disabled entirely (not recommended).
     """
     if FastMCP is None:
         raise RuntimeError(
@@ -126,6 +135,23 @@ def _build_server(
             resource_server_url=resource_server_url,
             required_scopes=["sbr:review"],
         )
+
+    # DNS-rebinding protection — default to loopback+localhost, let callers
+    # add public hostnames.  `127.0.0.1:*` matches any port; `localhost:*`
+    # ditto.
+    effective_hosts = (
+        allowed_hosts if allowed_hosts is not None else ["127.0.0.1:*", "localhost:*"]
+    )
+    if TransportSecuritySettings is not None:
+        if effective_hosts:
+            kwargs["transport_security"] = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=effective_hosts,
+            )
+        else:
+            kwargs["transport_security"] = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            )
 
     mcp = FastMCP("sbr", **kwargs)
     mgr = SessionManager()
@@ -333,6 +359,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="/",
         help="Mount path for HTTP/SSE transports.  Default: /",
     )
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        dest="allowed_hosts",
+        default=None,
+        help=(
+            "Allowed Host header for HTTP/SSE transport (repeatable).  "
+            "Used by FastMCP's DNS-rebinding protection.  Default when "
+            "unset: 127.0.0.1:* + localhost:*.  Add public hostnames "
+            "when fronted by a reverse proxy, e.g. --allowed-host "
+            "dev.projectit.ai --allowed-host 127.0.0.1:*"
+        ),
+    )
     return parser
 
 
@@ -361,7 +400,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         auth_token = args.auth_token if args.transport != "stdio" else None
-        mcp = _build_server(auth_token=auth_token)
+        mcp = _build_server(
+            auth_token=auth_token,
+            allowed_hosts=args.allowed_hosts,
+        )
     except RuntimeError as exc:
         print(f"[sbr-mcp-server] {exc}", file=sys.stderr)
         return 2
