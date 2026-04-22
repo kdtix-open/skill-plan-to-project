@@ -980,6 +980,68 @@ class TestRefreshMode:
         assert "issue-182-after" in diff_text
         assert "OLD BODY" in diff_text  # the removed line shows in the diff
 
+    def test_preserve_outside_zone_keeps_html_comment_prefix(self):
+        """Stage 2.5: HTML comment + blockquote before `# Heading` survive refresh."""
+        from scripts import create_issues
+
+        existing = (
+            "<!-- scope-sequence-order: 1 -->\n\n"
+            "> **Sequence Order: 1** — operator-declared ship-order.  "
+            "Read by Story #250 parser.\n\n"
+            "# Project Scope: Test\n\n"
+            "Body content here.\n"
+        )
+        new = "# Project Scope: Test\n\nFreshly rendered body.\n"
+        merged, preserved = create_issues._preserve_outside_template_zone(existing, new)
+        assert "<!-- scope-sequence-order: 1 -->" in merged
+        assert "**Sequence Order: 1**" in merged
+        assert "Read by Story #250 parser." in merged
+        assert "Freshly rendered body." in merged
+        assert "scope-sequence-order" in preserved["prefix"]
+
+    def test_preserve_outside_zone_is_idempotent(self):
+        """Running the merge twice doesn't duplicate the prefix."""
+        from scripts import create_issues
+
+        existing = "<!-- marker -->\n\n# Project Scope: Test\n\nA\n"
+        new = "# Project Scope: Test\n\nB\n"
+        once, _ = create_issues._preserve_outside_template_zone(existing, new)
+        twice, _ = create_issues._preserve_outside_template_zone(once, once)
+        assert once.count("<!-- marker -->") == 1
+        assert twice.count("<!-- marker -->") == 1
+
+    def test_preserve_outside_zone_keeps_trailing_signature(self):
+        """Content after the `_Created: ..._` footer survives refresh."""
+        from scripts import create_issues
+
+        existing = (
+            "# Project Scope: Test\n\n"
+            "Body.\n\n"
+            "_Created: 2026-01-01 | Owner: Someone_\n\n"
+            "---\n\n"
+            "_Operator note: this scope tracks Q1 commitment._\n"
+        )
+        new = (
+            "# Project Scope: Test\n\n"
+            "Body refreshed.\n\n"
+            "_Created: 2026-04-21 | Owner: TBD_\n"
+        )
+        merged, preserved = create_issues._preserve_outside_template_zone(existing, new)
+        assert "Operator note: this scope tracks Q1 commitment." in merged
+        assert "_Created: 2026-04-21" in merged
+        assert "Operator note" in preserved["suffix"]
+
+    def test_preserve_outside_zone_no_op_when_no_outside_content(self):
+        """When the existing body has no prefix/suffix, the merge is a no-op."""
+        from scripts import create_issues
+
+        existing = "# Project Scope: Test\n\nBody.\n"
+        new = "# Project Scope: Test\n\nNew body.\n"
+        merged, preserved = create_issues._preserve_outside_template_zone(existing, new)
+        assert merged == new
+        assert preserved["prefix"] == ""
+        assert preserved["suffix"] == ""
+
     def test_unified_diff_snippet_truncates_long_diffs(self):
         """Diffs longer than max_lines are capped with a truncation marker."""
         from scripts import create_issues
