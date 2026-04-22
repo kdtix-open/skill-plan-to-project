@@ -7,10 +7,16 @@ name = "plan-to-project"
 version = "0.1.0"
 description = "GitHub Copilot skill: convert a markdown plan into a GitHub Project backlog"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    "PyJWT>=2.8",
+    "cryptography>=42",
+    "mcp>=1.0",
+]
 
 [project.scripts]
 plan-to-project-install = "scripts.install_codex:main"
+sbr = "scripts.sbr.cli:main"
+sbr-mcp-server = "scripts.sbr.mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -21,7 +27,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["scripts"]
+packages = ["scripts", "scripts.sbr"]
 
 [tool.pytest.ini_options]
 testpaths = ["scripts/tests"]

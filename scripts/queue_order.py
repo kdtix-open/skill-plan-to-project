@@ -176,8 +176,8 @@ def run_queue_order(
     print("\n=== Recommended Queue Order (Stories) ===")
     for i, record in enumerate(ordered, 1):
         print(
-            f"  {i}. #{record['number']} [{record.get('priority','P1')}/"
-            f"{record.get('size','M')}] {record['title']}"
+            f"  {i}. #{record['number']} [{record.get('priority', 'P1')}/"
+            f"{record.get('size', 'M')}] {record['title']}"
         )
 
     output = [

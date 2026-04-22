@@ -211,9 +211,9 @@ class TestParsePlanItemFields:
     def test_initiative_has_all_required_fields(self, tmp_plan):
         result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))
         for field in self.REQUIRED_FIELDS:
-            assert (
-                field in result["initiative"]
-            ), f"initiative must have field '{field}'"
+            assert field in result["initiative"], (
+                f"initiative must have field '{field}'"
+            )
 
     def test_epic_has_all_required_fields_plus_parent_ref(self, tmp_plan):
         result = create_issues.parse_plan(str(tmp_plan(MINIMAL_PLAN)))

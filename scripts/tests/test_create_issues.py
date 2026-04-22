@@ -209,9 +209,9 @@ class TestGenerateBody:
         }
         for level in ("scope", "initiative", "epic", "story", "task"):
             body = create_issues.generate_body(base_item, level)
-            assert (
-                "I Know I Am Done When" in body
-            ), f"Level '{level}' body missing 'I Know I Am Done When'"
+            assert "I Know I Am Done When" in body, (
+                f"Level '{level}' body missing 'I Know I Am Done When'"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +258,9 @@ class TestPreflight:
         mock_run.side_effect = self._make_run_side_effect(tmp_path)
         config = create_issues.preflight("kdtix-open", "kdtix-open/test-repo", 8)
         for level in ("scope", "initiative", "epic", "story", "task"):
-            assert (
-                level in config["issue_type_ids"]
-            ), f"issue_type_ids must have '{level}'"
+            assert level in config["issue_type_ids"], (
+                f"issue_type_ids must have '{level}'"
+            )
 
     @patch("scripts.gh_helpers.subprocess.run")
     def test_preflight_returns_all_three_field_ids(

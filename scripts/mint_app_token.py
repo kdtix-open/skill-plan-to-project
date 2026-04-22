@@ -243,9 +243,7 @@ def _sign_app_jwt(app_id: str, private_key_pem: bytes) -> str:
     return _pyjwt.encode(payload, private_key_pem, algorithm="RS256")
 
 
-def _http_request(
-    url: str, token: str, method: str = "GET"
-) -> tuple[int, dict]:
+def _http_request(url: str, token: str, method: str = "GET") -> tuple[int, dict]:
     """Minimal GitHub API call (stdlib urllib; no `requests` dependency)."""
     # URL is always hardcoded https://api.github.com/... from the two call
     # sites below; no user-controlled scheme risk.  S310 false positive.

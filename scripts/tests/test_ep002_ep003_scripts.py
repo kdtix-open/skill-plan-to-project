@@ -980,7 +980,7 @@ class TestFR53TddSentinelDedup:
         }
         rendered = create_issues.generate_body(item, "story")
         # Count lines that mention TDD — should be exactly 1 (operator's bullet)
-        tdd_lines = [l for l in rendered.splitlines() if "TDD followed" in l]
+        tdd_lines = [line for line in rendered.splitlines() if "TDD followed" in line]
         assert len(tdd_lines) == 1, (
             f"expected 1 TDD line, got {len(tdd_lines)}: {tdd_lines}"
         )
@@ -1160,9 +1160,7 @@ class TestFR45RequiredSubsectionGate:
             "stories": [],
             "tasks": [],
         }
-        gaps = create_issues.enforce_subsection_schema(
-            hierarchy, allow_shallow=True
-        )
+        gaps = create_issues.enforce_subsection_schema(hierarchy, allow_shallow=True)
         # gaps returned even when allow_shallow; operator sees warning but
         # execution continues
         assert len(gaps) == 1
@@ -2326,7 +2324,7 @@ class TestSubsectionParser:
     def test_unrecognized_heading_stays_as_content(self):
         from scripts import create_issues
 
-        body = "#### Implementation Notes\n\n" "### Approach\n\n" "Do X then Y.\n"
+        body = "#### Implementation Notes\n\n### Approach\n\nDo X then Y.\n"
         subs = create_issues._parse_subsections(body, "task")
         # Unrecognized `### Approach` is not a new subsection — it remains
         # inside Implementation Notes as content.
@@ -2623,7 +2621,7 @@ class TestRenderTaskSubsections:
         from scripts import create_issues
 
         item = self._task_item(
-            "#### Implementation Notes\n\n### Approach\n" "Use regex then pandas.\n"
+            "#### Implementation Notes\n\n### Approach\nUse regex then pandas.\n"
         )
         body = create_issues.generate_body(item, "task")
         assert "[How to implement this" not in body
@@ -2742,7 +2740,7 @@ class TestMermaidDiagramParser:
         the parser still captures the content."""
         from scripts import create_issues
 
-        body = "#### Flowchart\n\n" "flowchart LR\n    A-->B\n    B-->C\n"
+        body = "#### Flowchart\n\nflowchart LR\n    A-->B\n    B-->C\n"
         subs = create_issues._parse_subsections(body, "epic")
         assert len(subs["diagrams"]) == 1
         assert subs["diagrams"][0]["type"] == "flowchart"
@@ -2752,8 +2750,7 @@ class TestMermaidDiagramParser:
         from scripts import create_issues
 
         body_template = (
-            "#### Sequence Diagram\n\n"
-            "```mermaid\nsequenceDiagram\n    A->>B: x\n```\n"
+            "#### Sequence Diagram\n\n```mermaid\nsequenceDiagram\n    A->>B: x\n```\n"
         )
         for level in ("scope", "initiative", "epic", "story", "task"):
             subs = create_issues._parse_subsections(body_template, level)
@@ -2790,8 +2787,7 @@ class TestMermaidDiagramRenderer:
         from scripts import create_issues
 
         body = (
-            "#### Sequence Diagram\n\n"
-            "```mermaid\nsequenceDiagram\n    A->>B: x\n```\n"
+            "#### Sequence Diagram\n\n```mermaid\nsequenceDiagram\n    A->>B: x\n```\n"
         )
         item = {
             "title": "Test",
@@ -2843,7 +2839,7 @@ class TestMermaidDiagramRenderer:
         """Task template has no [DIAGRAMS_HOOK_TASK] placeholder."""
         from scripts import create_issues
 
-        body = "#### Flowchart\n\n" "```mermaid\nflowchart LR\n    A-->B\n```\n"
+        body = "#### Flowchart\n\n```mermaid\nflowchart LR\n    A-->B\n```\n"
         item = {
             "title": "Test",
             "description": body,
@@ -2919,6 +2915,6 @@ class TestP0_5MermaidValidation:
         """`FlowChart LR` (mixed case) is still recognized as valid."""
         from scripts import compliance_check
 
-        body = "```mermaid\n" "FlowChart LR\n" "    A --> B\n" "```\n"
+        body = "```mermaid\nFlowChart LR\n    A --> B\n```\n"
         gaps = compliance_check.check_issue(1, "Test", body, "scope")
         assert not [g for g in gaps if g.get("rule") == "P0-5"]
