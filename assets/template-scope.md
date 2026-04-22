@@ -12,6 +12,8 @@
 
 ---
 
+[DIAGRAMS_HOOK_SCOPE]
+
 ## Business Problem & Current State
 
 [Describe the problem being solved and why the current approach is insufficient]

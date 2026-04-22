@@ -256,6 +256,66 @@ task). Each subsection heading can use any markdown depth (`##` through
 Subsections are OPTIONAL — when absent, the original template placeholder remains
 and the P0-4 scanner flags it. This lets you adopt the schema one plan at a time.
 
+### Mermaid diagram support (FR #40)
+
+Any item may attach one or more Mermaid diagrams via diagram-specific subsection
+headings. Diagrams are rendered into a conventional hook section — GitHub
+renders them natively (no extra tooling required). Validation catches invalid
+Mermaid syntax before ship as a new **P0-5** compliance rule.
+
+**Recognized diagram subsection headings** (case-insensitive):
+
+| Heading | Canonical key | Default type |
+|---|---|---|
+| Architecture Diagram, Architecture, C4 Context, C4 Container, C4 Component | `architecture_diagram` | `C4Context` |
+| Sequence Diagram, Sequence | `sequence_diagram` | `sequenceDiagram` |
+| State Diagram, State Machine | `state_diagram` | `stateDiagram-v2` |
+| Flowchart, Flow Diagram | `flowchart` | `flowchart` |
+| ER Diagram, Entity Relationship Diagram, ERD | `er_diagram` | `erDiagram` |
+| Requirement Diagram, Requirements Diagram | `requirement_diagram` | `requirementDiagram` |
+| Class Diagram | `class_diagram` | `classDiagram` |
+| Diagram (generic) | `diagram` | inferred from block directive |
+
+**Per-level recommendations** (guidance, not enforcement):
+
+| Level | Rendered section | Best-fit diagram types |
+|---|---|---|
+| Scope | `## Architecture & Diagrams` | requirementDiagram, C4Context |
+| Initiative | `## Architecture & Diagrams` | C4Container, architecture-beta, erDiagram |
+| Epic | `## Architecture & Diagrams` | C4Component, flowchart, stateDiagram-v2 |
+| Story | `## Workflow & Diagrams` | sequenceDiagram, stateDiagram-v2, flowchart |
+| Task | (no hook) | usually too tactical; add manually if needed |
+
+**Authoring example** (Story with both state + sequence diagrams):
+
+````markdown
+### Story: Bridge session auth + recovery
+
+#### State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Running : dispatch
+    Running --> Succeeded : ok
+    Running --> Failed : error
+    Failed --> Idle : restart
+```
+
+#### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    Orchestrator->>Bridge: POST /work
+    Bridge->>Provider: run(prompt)
+    Provider-->>Bridge: result
+    Bridge-->>Orchestrator: 200 OK
+```
+````
+
+Backward compatibility: plans without diagram subsections render identically to
+pre-FR-#40 bodies (the diagram hook section is elided cleanly).
+
 ## Design Decisions
 
 See [design-decisions.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/design-decisions.md) for the full

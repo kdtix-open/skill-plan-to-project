@@ -69,6 +69,80 @@ DONE_WHEN_RE = re.compile(r"I Know I Am Done When", re.IGNORECASE)
 # empty brackets + checkbox markers without requiring special cases.
 PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9 _,/\-\[\]—\.]+\]")
 
+# P0-5 (FR #40): Mermaid block validation.  A ```mermaid fenced block is
+# considered valid when its first non-blank, non-comment (`%%`) line starts
+# with one of the recognized directive tokens.  Catches the most common
+# authoring mistake — operator pastes prose into a ```mermaid block — without
+# pulling in a full Mermaid parser dependency.  For stricter validation
+# operators can run `validate_and_render_mermaid_diagram` (MCP tool) or the
+# Mermaid CLI (`mmdc`) out-of-band.
+_MERMAID_FENCE_RE = re.compile(
+    r"```\s*mermaid\s*\n(?P<body>.*?)\n```",
+    re.DOTALL | re.IGNORECASE,
+)
+_VALID_MERMAID_DIRECTIVES = (
+    "flowchart",
+    "graph",
+    "sequenceDiagram",
+    "classDiagram",
+    "stateDiagram-v2",
+    "stateDiagram",
+    "erDiagram",
+    "C4Context",
+    "C4Container",
+    "C4Component",
+    "C4Dynamic",
+    "C4Deployment",
+    "requirementDiagram",
+    "architecture-beta",
+    "journey",
+    "gantt",
+    "pie",
+    "mindmap",
+    "gitGraph",
+    "timeline",
+    "sankey-beta",
+    "quadrantChart",
+    "xychart-beta",
+    "block-beta",
+    "packet-beta",
+    "kanban",
+    "radar",
+)
+
+
+def _find_invalid_mermaid_blocks(body: str) -> list[str]:
+    """Return excerpts of invalid mermaid blocks in `body`.
+
+    A block is invalid when its first non-blank, non-comment line does NOT
+    start with a recognized directive.  Returns the offending first line
+    (trimmed to 60 chars) so the operator can locate the block.
+    """
+    invalid: list[str] = []
+    for m in _MERMAID_FENCE_RE.finditer(body):
+        source = m.group("body")
+        first_meaningful_line = ""
+        for raw in source.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("%%"):
+                continue
+            first_meaningful_line = line
+            break
+        if not first_meaningful_line:
+            invalid.append("(empty mermaid block)")
+            continue
+        first_token = first_meaningful_line.split()[0]
+        # Directives match case-insensitively (Mermaid accepts both
+        # `flowchart LR` and `FlowChart LR`).
+        valid = any(first_token.lower() == d.lower() for d in _VALID_MERMAID_DIRECTIVES)
+        if not valid:
+            excerpt = first_meaningful_line[:60]
+            if len(first_meaningful_line) > 60:
+                excerpt += "..."
+            invalid.append(excerpt)
+    return invalid
+
+
 # Additional placeholder patterns the templates use that don't match the
 # all-caps rule above (e.g. "[Describe the problem ...]", "[1-sentence
 # summary...]", "[Why this initiative exists...]").  These all start with a
@@ -157,6 +231,30 @@ def check_issue(
                 ),
                 "fixed": False,
                 "placeholders": sorted(placeholder_matches),
+            }
+        )
+
+    # P0-5 (FR #40): Invalid Mermaid blocks
+    # Any ```mermaid fenced block whose first non-blank/comment line is NOT
+    # a recognized diagram directive is flagged.  Catches "operator pasted
+    # prose instead of mermaid" + typos like "sequencDiagram".
+    invalid_mermaid = _find_invalid_mermaid_blocks(body)
+    if invalid_mermaid:
+        gaps.append(
+            {
+                "severity": "P0",
+                "rule": "P0-5",
+                "description": (
+                    f"{len(invalid_mermaid)} invalid Mermaid block(s): "
+                    f"{', '.join(invalid_mermaid[:3])}"
+                    + (
+                        f" (+ {len(invalid_mermaid) - 3} more)"
+                        if len(invalid_mermaid) > 3
+                        else ""
+                    )
+                ),
+                "fixed": False,
+                "invalid_mermaid": invalid_mermaid,
             }
         )
 
@@ -308,13 +406,17 @@ def run_compliance_check(
         # Separate P0-4 (placeholder) gaps from auto-fixable P0 gaps.
         # autofix_body only knows about P0-1/P0-2/P0-3 remediations;
         # placeholders are operator/parser work per FR #34 Stage 2+.
-        autofixable_p0 = [g for g in gaps if g["severity"] == "P0" and g["rule"] != "P0-4"]
+        autofixable_p0 = [
+            g for g in gaps if g["severity"] == "P0" and g["rule"] != "P0-4"
+        ]
         placeholder_p0 = [g for g in gaps if g["rule"] == "P0-4"]
 
         if autofixable_p0:
             fixed_body = autofix_body(body, autofixable_p0)
             update_issue_body(repo, number, fixed_body)
-            report["summary"]["p0_fixed"] += sum(1 for g in autofixable_p0 if g["fixed"])
+            report["summary"]["p0_fixed"] += sum(
+                1 for g in autofixable_p0 if g["fixed"]
+            )
 
         report["summary"]["p0_placeholders"] += len(placeholder_p0)
         report["summary"]["p1_gaps"] += sum(1 for g in gaps if g["severity"] == "P1")

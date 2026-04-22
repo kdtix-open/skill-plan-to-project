@@ -2307,3 +2307,247 @@ class TestEndToEndPlanRender:
             f"Unexpected placeholder gaps after full render: "
             f"{[g.get('placeholders') for g in p0_4]}"
         )
+
+
+# ===========================================================================
+# FR #40: Mermaid diagram subsections
+# ===========================================================================
+
+
+class TestMermaidDiagramParser:
+    def test_parses_single_sequence_diagram(self):
+        from scripts import create_issues
+
+        body = (
+            "#### Sequence Diagram\n\n"
+            "```mermaid\n"
+            "sequenceDiagram\n"
+            "    Alice->>Bob: Hi\n"
+            "```\n"
+        )
+        subs = create_issues._parse_subsections(body, "story")
+        assert "diagrams" in subs
+        assert len(subs["diagrams"]) == 1
+        d = subs["diagrams"][0]
+        assert d["type"] == "sequenceDiagram"
+        assert "Alice->>Bob: Hi" in d["source"]
+
+    def test_parses_multiple_diagram_subsections(self):
+        """Two subsection headings → two diagrams in the list."""
+        from scripts import create_issues
+
+        body = (
+            "#### Sequence Diagram\n\n"
+            "```mermaid\n"
+            "sequenceDiagram\n    A->>B: x\n"
+            "```\n\n"
+            "#### State Diagram\n\n"
+            "```mermaid\n"
+            "stateDiagram-v2\n    [*] --> Idle\n"
+            "```\n"
+        )
+        subs = create_issues._parse_subsections(body, "story")
+        assert len(subs["diagrams"]) == 2
+        types = [d["type"] for d in subs["diagrams"]]
+        assert "sequenceDiagram" in types
+        assert "stateDiagram-v2" in types
+
+    def test_infers_type_from_block_when_subsection_is_generic(self):
+        """`#### Diagram` (generic key) gets type from the block's directive."""
+        from scripts import create_issues
+
+        body = (
+            "#### Diagram\n\n"
+            "```mermaid\n"
+            "erDiagram\n"
+            "    USER ||--o{ ORDER : places\n"
+            "```\n"
+        )
+        subs = create_issues._parse_subsections(body, "initiative")
+        assert subs["diagrams"][0]["type"] == "erDiagram"
+
+    def test_unfenced_mermaid_source_accepted_if_has_directive(self):
+        """If operator forgets fences but writes a valid directive,
+        the parser still captures the content."""
+        from scripts import create_issues
+
+        body = "#### Flowchart\n\n" "flowchart LR\n    A-->B\n    B-->C\n"
+        subs = create_issues._parse_subsections(body, "epic")
+        assert len(subs["diagrams"]) == 1
+        assert subs["diagrams"][0]["type"] == "flowchart"
+
+    def test_diagram_subsection_recognized_at_every_level(self):
+        """Every level accepts diagram subsection aliases."""
+        from scripts import create_issues
+
+        body_template = (
+            "#### Sequence Diagram\n\n"
+            "```mermaid\nsequenceDiagram\n    A->>B: x\n```\n"
+        )
+        for level in ("scope", "initiative", "epic", "story", "task"):
+            subs = create_issues._parse_subsections(body_template, level)
+            assert subs.get("diagrams"), f"Level {level} missed diagram"
+
+
+class TestMermaidDiagramRenderer:
+    def _scope_item_with_body(self, body: str) -> dict:
+        from scripts import create_issues
+
+        return {
+            "title": "Test scope",
+            "description": body,
+            "priority": "P1",
+            "size": "M",
+            "subsections": create_issues._parse_subsections(body, "scope"),
+        }
+
+    def test_scope_renders_architecture_diagrams_section(self):
+        from scripts import create_issues
+
+        item = self._scope_item_with_body(
+            "#### Architecture Diagram\n\n"
+            "```mermaid\n"
+            "C4Context\n    title System\n    Person(u, 'User')\n"
+            "```\n"
+        )
+        body = create_issues.generate_body(item, "scope")
+        assert "## Architecture & Diagrams" in body
+        assert "C4Context" in body
+        assert "```mermaid" in body
+
+    def test_story_renders_workflow_and_diagrams_section(self):
+        from scripts import create_issues
+
+        body = (
+            "#### Sequence Diagram\n\n"
+            "```mermaid\nsequenceDiagram\n    A->>B: x\n```\n"
+        )
+        item = {
+            "title": "Test",
+            "description": body,
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": create_issues._parse_subsections(body, "story"),
+        }
+        rendered = create_issues.generate_body(item, "story")
+        assert "## Workflow & Diagrams" in rendered
+        assert "sequenceDiagram" in rendered
+
+    def test_no_diagrams_elides_hook_section(self):
+        """When the plan has no diagrams, the template hook is removed
+        (no empty 'Architecture & Diagrams' section)."""
+        from scripts import create_issues
+
+        item = self._scope_item_with_body("Just a Vision paragraph.")
+        body = create_issues.generate_body(item, "scope")
+        assert "[DIAGRAMS_HOOK_SCOPE]" not in body
+        assert "## Architecture & Diagrams" not in body
+
+    def test_multiple_diagrams_get_sub_headings(self):
+        from scripts import create_issues
+
+        body = (
+            "#### Sequence Diagram\n\n"
+            "```mermaid\nsequenceDiagram\n    A->>B: 1\n```\n\n"
+            "#### State Diagram\n\n"
+            "```mermaid\nstateDiagram-v2\n    [*] --> Idle\n```\n"
+        )
+        item = {
+            "title": "Test",
+            "description": body,
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": create_issues._parse_subsections(body, "story"),
+        }
+        rendered = create_issues.generate_body(item, "story")
+        # Both diagrams should render with their type labels
+        assert "### Sequence Diagram" in rendered
+        assert "### State Diagram" in rendered
+        assert "sequenceDiagram" in rendered
+        assert "stateDiagram-v2" in rendered
+
+    def test_task_level_has_no_diagram_hook_by_default(self):
+        """Task template has no [DIAGRAMS_HOOK_TASK] placeholder."""
+        from scripts import create_issues
+
+        body = "#### Flowchart\n\n" "```mermaid\nflowchart LR\n    A-->B\n```\n"
+        item = {
+            "title": "Test",
+            "description": body,
+            "priority": "P1",
+            "size": "S",
+            "parent_ref": "Test story",
+            "subsections": create_issues._parse_subsections(body, "task"),
+        }
+        rendered = create_issues.generate_body(item, "task")
+        # The diagram subsection is parsed but the task template has no
+        # conventional hook.  Operators who want a task-level diagram can
+        # add the section manually.  This asserts the render doesn't
+        # crash and doesn't pollute the body with a stray [DIAGRAMS_*]
+        # placeholder string.
+        assert "[DIAGRAMS_HOOK" not in rendered
+
+
+class TestP0_5MermaidValidation:
+    def test_valid_mermaid_block_not_flagged(self):
+        from scripts import compliance_check
+
+        body = (
+            "# Scope: Test\n\n"
+            "## Architecture & Diagrams\n\n"
+            "```mermaid\n"
+            "sequenceDiagram\n"
+            "    Alice->>Bob: Hello\n"
+            "```\n"
+        )
+        gaps = compliance_check.check_issue(1, "Test", body, "scope")
+        assert not [g for g in gaps if g.get("rule") == "P0-5"]
+
+    def test_invalid_mermaid_block_flagged(self):
+        from scripts import compliance_check
+
+        body = (
+            "# Scope: Test\n\n"
+            "## Architecture & Diagrams\n\n"
+            "```mermaid\n"
+            "This is not actually mermaid syntax\n"
+            "just prose someone pasted in\n"
+            "```\n"
+        )
+        gaps = compliance_check.check_issue(1, "Test", body, "scope")
+        p0_5 = [g for g in gaps if g.get("rule") == "P0-5"]
+        assert len(p0_5) == 1
+        assert "invalid Mermaid" in p0_5[0]["description"]
+
+    def test_empty_mermaid_block_flagged(self):
+        from scripts import compliance_check
+
+        body = "```mermaid\n\n```\n"
+        gaps = compliance_check.check_issue(1, "Test", body, "scope")
+        p0_5 = [g for g in gaps if g.get("rule") == "P0-5"]
+        assert len(p0_5) == 1
+
+    def test_comments_in_mermaid_block_are_skipped(self):
+        """`%%` comment lines don't count as the 'first line'."""
+        from scripts import compliance_check
+
+        body = (
+            "```mermaid\n"
+            "%% top comment\n"
+            "%% another comment\n"
+            "sequenceDiagram\n"
+            "    A->>B: x\n"
+            "```\n"
+        )
+        gaps = compliance_check.check_issue(1, "Test", body, "scope")
+        assert not [g for g in gaps if g.get("rule") == "P0-5"]
+
+    def test_mermaid_validation_case_insensitive(self):
+        """`FlowChart LR` (mixed case) is still recognized as valid."""
+        from scripts import compliance_check
+
+        body = "```mermaid\n" "FlowChart LR\n" "    A --> B\n" "```\n"
+        gaps = compliance_check.check_issue(1, "Test", body, "scope")
+        assert not [g for g in gaps if g.get("rule") == "P0-5"]

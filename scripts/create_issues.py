@@ -201,6 +201,49 @@ def _extract_blocking(text: str) -> list[str]:
 
 # Per-level canonical subsection keys and the heading aliases that match
 # them.  Aliases are compared case-insensitively + whitespace-normalized.
+#
+# Diagram subsection keys (FR #40) are included at every level — each maps
+# to a canonical Mermaid diagram type.  The parser extracts the fenced
+# `mermaid` block + aggregates all diagrams into the `diagrams` list on
+# the subsection dict (see `_normalize_subsection`).
+_DIAGRAM_SUBSECTION_ALIASES: dict[str, list[str]] = {
+    "architecture_diagram": [
+        "architecture diagram",
+        "architecture",
+        "c4 diagram",
+        "c4 context diagram",
+        "c4 container diagram",
+        "c4 component diagram",
+        "c4 context",
+        "c4 container",
+        "c4 component",
+        "c4",
+    ],
+    "sequence_diagram": ["sequence diagram", "sequence"],
+    "state_diagram": ["state diagram", "state machine"],
+    "flowchart": ["flowchart", "flow chart", "flow diagram"],
+    "er_diagram": [
+        "er diagram",
+        "entity relationship diagram",
+        "entity-relationship diagram",
+        "entity relationship",
+        "entity-relationship",
+        "erd",
+    ],
+    "requirement_diagram": [
+        "requirement diagram",
+        "requirements diagram",
+    ],
+    "class_diagram": ["class diagram"],
+    "diagram": ["diagram"],
+}
+
+
+def _level_diagram_aliases() -> dict[str, list[str]]:
+    """Return a shallow copy of the diagram alias map for merging per-level."""
+    return {k: list(v) for k, v in _DIAGRAM_SUBSECTION_ALIASES.items()}
+
+
 SUBSECTION_HEADINGS: dict[str, dict[str, list[str]]] = {
     "scope": {
         "vision": ["vision", "project vision"],
@@ -225,6 +268,7 @@ SUBSECTION_HEADINGS: dict[str, dict[str, list[str]]] = {
             "done when",
             "definition of done",
         ],
+        **_level_diagram_aliases(),
     },
     "initiative": {
         "objective": ["objective"],
@@ -240,6 +284,7 @@ SUBSECTION_HEADINGS: dict[str, dict[str, list[str]]] = {
             "done when",
             "definition of done",
         ],
+        **_level_diagram_aliases(),
     },
     "epic": {
         "objective": ["objective"],
@@ -260,6 +305,7 @@ SUBSECTION_HEADINGS: dict[str, dict[str, list[str]]] = {
             "security",
             "compliance",
         ],
+        **_level_diagram_aliases(),
     },
     "story": {
         "user_story": ["user story"],
@@ -282,6 +328,7 @@ SUBSECTION_HEADINGS: dict[str, dict[str, list[str]]] = {
             "compliance",
         ],
         "subtasks_needed": ["subtasks needed", "subtasks"],
+        **_level_diagram_aliases(),
     },
     "task": {
         "summary": ["summary"],
@@ -297,8 +344,45 @@ SUBSECTION_HEADINGS: dict[str, dict[str, list[str]]] = {
             "security",
             "compliance",
         ],
+        **_level_diagram_aliases(),
     },
 }
+
+# Set of canonical diagram keys — used by the parser + renderer to
+# recognize diagram-type subsections across all levels.
+_DIAGRAM_SUBSECTION_KEYS = set(_DIAGRAM_SUBSECTION_ALIASES.keys())
+
+# Mermaid diagram type directives (first line of a mermaid block).  Used
+# by `_infer_mermaid_type` + the validator in `compliance_check.py`.
+_MERMAID_TYPE_DIRECTIVES: tuple[str, ...] = (
+    "flowchart",
+    "graph",  # legacy flowchart alias
+    "sequenceDiagram",
+    "classDiagram",
+    "stateDiagram-v2",
+    "stateDiagram",
+    "erDiagram",
+    "C4Context",
+    "C4Container",
+    "C4Component",
+    "C4Dynamic",
+    "C4Deployment",
+    "requirementDiagram",
+    "architecture-beta",
+    "journey",
+    "gantt",
+    "pie",
+    "mindmap",
+    "gitGraph",
+    "timeline",
+    "sankey-beta",
+    "quadrantChart",
+    "xychart-beta",
+    "block-beta",
+    "packet-beta",
+    "kanban",
+    "radar",
+)
 
 # Subsections parsed as a flat list of bullets (vs. free-form paragraphs).
 _BULLET_SUBSECTIONS = {
@@ -361,7 +445,19 @@ def _parse_subsections(body: str, level: str) -> dict[str, Any]:
     def _flush_current() -> None:
         nonlocal current_key, current_lines
         if current_key is not None:
-            result[current_key] = _normalize_subsection(current_key, current_lines)
+            normalized = _normalize_subsection(current_key, current_lines)
+            # FR #40: diagrams aggregate into a single list so an item
+            # can carry N diagrams across multiple subsection headings
+            # (e.g. `#### Sequence Diagram` + `#### State Diagram` in one
+            # Story).
+            if current_key in _DIAGRAM_SUBSECTION_KEYS and normalized:
+                diagrams_list = result.setdefault("diagrams", [])
+                if isinstance(normalized, list):
+                    diagrams_list.extend(normalized)
+                else:
+                    diagrams_list.append(normalized)
+            else:
+                result[current_key] = normalized
         current_key = None
         current_lines = []
 
@@ -399,6 +495,9 @@ def _normalize_subsection(key: str, lines: list[str]) -> Any:
     if not text:
         return "" if key not in _BULLET_SUBSECTIONS else []
 
+    if key in _DIAGRAM_SUBSECTION_KEYS:
+        return _parse_diagram_blocks(text, key_hint=key)
+
     if key in _NESTED_BULLET_SUBSECTIONS:
         return _parse_nested_bullets(text, _NESTED_BULLET_SUBSECTIONS[key])
 
@@ -407,6 +506,75 @@ def _normalize_subsection(key: str, lines: list[str]) -> Any:
 
     # Default: paragraph (preserves original formatting + any inline markdown)
     return text
+
+
+_MERMAID_FENCE_RE = re.compile(
+    r"```\s*mermaid\s*\n(?P<body>.*?)\n```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _infer_mermaid_type(mermaid_source: str) -> str | None:
+    """Return the recognized directive (e.g. 'sequenceDiagram') or None.
+
+    Inspects the first non-blank, non-comment line of a mermaid block.
+    Comments in mermaid start with `%%`.
+    """
+    for raw in mermaid_source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("%%"):
+            continue
+        first_token = line.split()[0] if line else ""
+        # Match directives case-insensitively.  Mermaid accepts
+        # `flowchart LR`, `sequenceDiagram`, etc.  Legacy `graph TD`
+        # is normalized to "flowchart" downstream.
+        for directive in _MERMAID_TYPE_DIRECTIVES:
+            if first_token.lower() == directive.lower():
+                return directive
+        return None
+    return None
+
+
+def _parse_diagram_blocks(text: str, key_hint: str) -> list[dict[str, str]]:
+    """Extract fenced ```mermaid blocks from subsection content.
+
+    Returns a list of `{type, source}` dicts.  `type` comes from the
+    mermaid block's first directive if recognizable; otherwise falls back
+    to a guess based on `key_hint` (the subsection heading that contained
+    the block); otherwise is "unknown".
+
+    If the subsection contains NO fenced mermaid block, fall back to
+    treating the whole text as the source (gives operators a path to
+    paste mermaid without the fences, at the cost of looser validation).
+    """
+    matches = list(_MERMAID_FENCE_RE.finditer(text))
+    diagrams: list[dict[str, str]] = []
+    for m in matches:
+        source = m.group("body").strip()
+        if not source:
+            continue
+        inferred = _infer_mermaid_type(source)
+        # Map the key hint to a default directive when the block has no
+        # clear first directive (e.g. operator wrote only the body).
+        key_type_map = {
+            "architecture_diagram": "C4Context",
+            "sequence_diagram": "sequenceDiagram",
+            "state_diagram": "stateDiagram-v2",
+            "flowchart": "flowchart",
+            "er_diagram": "erDiagram",
+            "requirement_diagram": "requirementDiagram",
+            "class_diagram": "classDiagram",
+        }
+        diagram_type = inferred or key_type_map.get(key_hint, "unknown")
+        diagrams.append({"type": diagram_type, "source": source})
+    if diagrams:
+        return diagrams
+
+    # Fallback: operator wrote mermaid-looking content without fences.
+    # Accept it if the first token is a recognized directive.
+    if _infer_mermaid_type(text):
+        return [{"type": _infer_mermaid_type(text) or "unknown", "source": text}]
+    return []
 
 
 def _parse_bullets(text: str) -> list[str]:
@@ -814,6 +982,12 @@ def _render_template(template_text: str, item: dict[str, Any], level: str) -> st
     if filler is not None:
         rendered = filler(rendered, subs)
 
+    # FR #40: fill the diagram hook after section fillers so diagrams
+    # appear in their dedicated template slot (not inside any other
+    # section's content).  No-op for task (template has no diagram hook
+    # by default) + for issues with no diagrams in the plan.
+    rendered = _fill_diagrams_hook(rendered, subs, level)
+
     # Inject parent reference for levels that have one
     if parent and level in ("epic", "story", "task"):
         if "> **Parent" not in rendered:
@@ -853,6 +1027,94 @@ def _replace_block(rendered: str, old_block: str, new_block: str) -> str:
     if old_block in rendered:
         return rendered.replace(old_block, new_block, 1)
     return rendered
+
+
+def _render_diagrams_block(diagrams: list[dict[str, str]], section_title: str) -> str:
+    r"""Render a list of {type, source} diagrams as a Markdown section.
+
+    FR #40: produces a ``## <section_title>\n\n```mermaid\n...\n``` ``
+    block per diagram, separated by blank lines.  Returns empty string
+    when `diagrams` is empty so the template hook can be cleanly elided.
+    """
+    if not diagrams:
+        return ""
+    blocks: list[str] = [f"## {section_title}\n"]
+    for d in diagrams:
+        diagram_type = d.get("type", "unknown")
+        source = d.get("source", "").rstrip()
+        if not source:
+            continue
+        label = (
+            f"### {_humanize_diagram_type(diagram_type)}" if len(diagrams) > 1 else ""
+        )
+        if label:
+            blocks.append(label + "\n")
+        blocks.append(f"```mermaid\n{source}\n```\n")
+    return "\n".join(blocks).rstrip() + "\n\n---\n"
+
+
+def _humanize_diagram_type(diagram_type: str) -> str:
+    """Turn a Mermaid directive like 'sequenceDiagram' into 'Sequence Diagram'."""
+    translations = {
+        "flowchart": "Flowchart",
+        "graph": "Flowchart",
+        "sequenceDiagram": "Sequence Diagram",
+        "classDiagram": "Class Diagram",
+        "stateDiagram": "State Diagram",
+        "stateDiagram-v2": "State Diagram",
+        "erDiagram": "ER Diagram",
+        "C4Context": "C4 Context Diagram",
+        "C4Container": "C4 Container Diagram",
+        "C4Component": "C4 Component Diagram",
+        "C4Dynamic": "C4 Dynamic Diagram",
+        "C4Deployment": "C4 Deployment Diagram",
+        "requirementDiagram": "Requirement Diagram",
+        "architecture-beta": "Architecture Diagram",
+        "journey": "User Journey",
+        "gantt": "Gantt Chart",
+        "pie": "Pie Chart",
+        "mindmap": "Mindmap",
+        "gitGraph": "Git Graph",
+        "timeline": "Timeline",
+    }
+    return translations.get(diagram_type, diagram_type)
+
+
+def _fill_diagrams_hook(rendered: str, subs: dict[str, Any], level: str) -> str:
+    """Replace the level's `[DIAGRAMS_HOOK_*]` placeholder with rendered diagrams.
+
+    The title of the generated section depends on level:
+    - scope / initiative / epic → "Architecture & Diagrams"
+    - story → "Workflow & Diagrams"
+    - task → no diagram hook in template by default
+    """
+    hook_by_level = {
+        "scope": ("[DIAGRAMS_HOOK_SCOPE]", "Architecture & Diagrams"),
+        "initiative": (
+            "[DIAGRAMS_HOOK_INITIATIVE]",
+            "Architecture & Diagrams",
+        ),
+        "epic": ("[DIAGRAMS_HOOK_EPIC]", "Architecture & Diagrams"),
+        "story": ("[DIAGRAMS_HOOK_STORY]", "Workflow & Diagrams"),
+    }
+    if level not in hook_by_level:
+        return rendered
+    placeholder, section_title = hook_by_level[level]
+    if placeholder not in rendered:
+        return rendered
+    diagrams = subs.get("diagrams") or []
+    block = _render_diagrams_block(diagrams, section_title)
+    # When no diagrams, drop the whole placeholder line including trailing
+    # newlines so the template doesn't leave an empty gap.
+    if not block:
+        # Strip the placeholder line and any consecutive blank lines after it.
+        rendered = re.sub(
+            r"\n?\[DIAGRAMS_HOOK_[A-Z]+\]\n?\n?",
+            "\n",
+            rendered,
+        )
+        return rendered
+    return rendered.replace(placeholder, block.rstrip())
 
 
 def _moscow_table_rows(moscow: dict[str, list[str]]) -> str:

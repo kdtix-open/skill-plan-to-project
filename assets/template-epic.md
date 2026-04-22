@@ -18,6 +18,8 @@
 
 [What becomes possible after this epic ships — 1-2 sentences]
 
+[DIAGRAMS_HOOK_EPIC]
+
 ### Success Criteria
 
 - [ ] [CRITERION 1]

@@ -201,3 +201,85 @@ Teams can onboard a new provider in under one day instead of one week.
 Plans without `####` subsections continue to render exactly as they did before
 — the skill falls back to using the item's raw body as the primary narrative
 field. You can adopt the subsection schema on a single plan at a time.
+
+## Mermaid Diagrams (FR #40)
+
+Any item may attach one or more Mermaid diagrams via diagram-specific
+subsection headings. Each diagram goes in its own `#### <Type> Diagram`
+subsection containing a fenced `\`\`\`mermaid` block.
+
+### Recognized diagram subsection headings
+
+- `Architecture Diagram`, `Architecture`, `C4 Context`, `C4 Container`, `C4 Component`
+- `Sequence Diagram`, `Sequence`
+- `State Diagram`, `State Machine`
+- `Flowchart`, `Flow Diagram`
+- `ER Diagram`, `Entity Relationship Diagram`, `ERD`
+- `Requirement Diagram`, `Requirements Diagram`
+- `Class Diagram`
+- `Diagram` (generic — type inferred from the block's first directive)
+
+### Per-level diagram recommendations
+
+| Level | Where it pays off most | Best-fit types |
+|---|---|---|
+| **Project Scope** | "What do we deliver + to whom" | `requirementDiagram`, `C4Context` |
+| **Initiative** | "How does this system fit together" | `C4Container`, `architecture-beta`, `erDiagram` |
+| **Epic** | "What are the pieces + how do they interact" | `C4Component`, `flowchart`, `stateDiagram-v2` |
+| **User Story** | "Exact workflow I'll implement" | `sequenceDiagram`, `stateDiagram-v2`, `flowchart` |
+| **Task** | Usually too tactical | Occasional `classDiagram` or `flowchart` |
+
+Operators may use any diagram type at any level — the table is heuristic.
+
+### Where diagrams render
+
+- Scope / Initiative / Epic: rendered into a `## Architecture & Diagrams` section
+- User Story: rendered into a `## Workflow & Diagrams` section
+- Task: no default hook — add your own section if needed
+
+### Validation
+
+Each `\`\`\`mermaid` block's first non-blank, non-comment line must start with
+a recognized directive (`flowchart`, `sequenceDiagram`, `classDiagram`,
+`stateDiagram-v2`, `erDiagram`, `C4Context`, `C4Container`, `C4Component`,
+`requirementDiagram`, `architecture-beta`, etc.). Blocks with unrecognized
+first lines are flagged by the **P0-5** compliance rule.
+
+### Example (User Story with both state + sequence diagrams)
+
+````markdown
+### Story: Bridge session auth + recovery
+
+Priority: P1
+Size: M
+
+#### TL;DR
+
+Bridge maintains a session state machine with auto-recovery on auth errors.
+
+#### State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Running : dispatch
+    Running --> Succeeded : ok
+    Running --> Failed : error
+    Failed --> Idle : restart
+```
+
+#### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    Orchestrator->>Bridge: POST /work
+    Bridge->>Provider: run(prompt)
+    Provider-->>Bridge: result
+    Bridge-->>Orchestrator: 200 OK
+```
+````
+
+### Multiple diagrams per item
+
+When an item has more than one diagram, each diagram gets a `### <Type>`
+sub-heading in the rendered section so readers can navigate between them.
