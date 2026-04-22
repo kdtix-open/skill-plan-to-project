@@ -73,3 +73,131 @@ Size: XS
 - `initiative` is preserved as a backward-compatible alias to the first item in
   `initiatives`
 - Epics inherit the most recently declared initiative as their `parent_ref`
+
+## Structured Subsections (FR #34 Stage 2)
+
+Each item may declare one or more subsections inside its body. The parser
+recognizes known subsection headings and maps them 1:1 to placeholder groups in
+the generated issue template. Subsection headings can use any markdown depth
+(`##` through `######`) — the depth doesn't matter, only the heading text.
+
+Subsections are OPTIONAL. When absent, the item's raw body text populates the
+primary narrative field (Vision / Objective / TL;DR / Summary) and other
+placeholders remain as template text (the P0-4 scanner flags them).
+
+### Recognized subsection names per level
+
+**Scope:**
+- `Vision`, `Project Vision` → paragraph → replaces `[VISION — ...]`
+- `Business Problem`, `Business Problem & Current State`, `Current State` → paragraph
+- `Success Criteria` → bullets → replace `- [ ] [CRITERION 1]` / `[CRITERION 2]`
+- `In-Scope Capabilities`, `In-Scope` → bullets or paragraph
+- `Assumptions` → bullets
+- `Out of Scope` → bullets
+- `MoSCoW`, `MoSCoW Classification` → nested bullets (see MoSCoW format below)
+- `I Know I Am Done When`, `Done When`, `Definition of Done` → bullets
+
+**Initiative:** `Objective`, `Release Value`, `Success Criteria`, `Feature Scope`,
+`Assumptions`, `Dependencies`, `Out of Scope`, `Artifacts`,
+`I Know I Am Done When`.
+
+**Epic:** `Objective`, `Release Value`, `Success Criteria`, `Feature Scope`,
+`Assumptions`, `Dependencies`, `I Know I Am Done When`, `Code Areas`
+(alias `Code Areas to Examine`), `Questions for Tech Lead`,
+`Security/Compliance` (aliases `Security`, `Compliance`).
+
+**Story:** `User Story`, `TL;DR` (alias `TLDR`), `Why This Matters`, `Assumptions`,
+`MoSCoW`, `Dependencies`, `I Know I Am Done When`, `Acceptance Criteria`,
+`Constraints`, `Implementation Notes`, `Security/Compliance`,
+`Subtasks Needed` (alias `Subtasks`).
+
+**Task:** `Summary`, `Context`, `I Know I Am Done When`, `Implementation Notes`,
+`Security/Compliance`.
+
+### MoSCoW format
+
+```
+#### MoSCoW
+
+**Must Have**:
+- Item A
+- Item B
+
+**Should Have**:
+- Item C
+
+**Could Have**:
+- Item D
+
+**Won't Have**:
+- Item E
+```
+
+Each `**Group**:` line starts a new bullet group. Recognized group names:
+`Must Have`, `Should Have`, `Could Have`, `Won't Have` (or `Wont Have`).
+
+### Full example
+
+```markdown
+# Project Scope: PS-001 Build Widget Platform
+
+Delivers the widget platform with full provider parity.
+
+#### Business Problem
+
+Existing widget service has no provider abstraction and cannot onboard new
+customers without a fresh rebuild.
+
+#### Success Criteria
+
+- All five providers reach feature parity
+- End-to-end test suite is green
+- Admin dashboard ships to production
+
+#### Assumptions
+
+- Target org has a GitHub Project V2 with required fields
+- Bridge has valid credentials on the host
+
+#### Out of Scope
+
+- Native Windows supervisor (deferred to Phase 2)
+
+#### MoSCoW
+
+**Must Have**:
+- Token metering
+- Admin dashboard
+
+**Should Have**:
+- Realtime alerts
+
+**Could Have**:
+- Slack integration
+
+**Won't Have**:
+- Per-user throttling (this release)
+
+#### I Know I Am Done When
+
+- All Initiatives are Done
+- Widget dashboard live in prod
+
+## Initiative: INIT-001 Widget Core
+Priority: P0
+Size: M
+
+#### Objective
+
+Ship the widget core engine that all five providers use.
+
+#### Release Value
+
+Teams can onboard a new provider in under one day instead of one week.
+```
+
+### Backward compatibility
+
+Plans without `####` subsections continue to render exactly as they did before
+— the skill falls back to using the item's raw body as the primary narrative
+field. You can adopt the subsection schema on a single plan at a time.

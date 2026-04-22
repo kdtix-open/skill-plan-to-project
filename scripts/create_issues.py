@@ -19,6 +19,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import os
 import re
@@ -105,6 +106,12 @@ def parse_plan(filepath: str) -> dict[str, Any]:
             current["priority"] = _extract_priority(body_body)
             current["size"] = _extract_size(body_body)
             current["blocking"] = _extract_blocking(body_body)
+            # Stage 2 (FR #34): extract recognized `#### Section Name`
+            # subsections from the item body so the renderer can map them
+            # 1:1 to template placeholder groups.  Safe for plans that
+            # don't use subsections (returns `{}` + the whole body as
+            # `_leading_text`).
+            current["subsections"] = _parse_subsections(body_body, current["level"])
             items.append(current)
 
     for line in lines:
@@ -172,6 +179,280 @@ def _extract_blocking(text: str) -> list[str]:
             ref = ref.strip()
             if ref:
                 result.append(ref)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 (FR #34): Structured subsection parser.
+#
+# Recognizes `#### Section Name` headings inside an item's body and maps
+# them to canonical keys so the template renderer can substitute them into
+# placeholder groups.  Unrecognized headings + free text fall into
+# `_leading_text` as a fallback for the item's primary narrative field
+# (Vision for scope, Objective for initiative/epic, TL;DR for story,
+# Summary for task).
+#
+# Subsection headings can use any markdown header depth (## through ######)
+# so long as the trimmed heading text matches one of the aliases below
+# (case-insensitive).  The outer plan parser (`parse_plan`) already filters
+# out level-prefix lines (`Project Scope:`, `Initiative:`, etc.) so
+# subsection parsing only sees the body portion of each item.
+# ---------------------------------------------------------------------------
+
+# Per-level canonical subsection keys and the heading aliases that match
+# them.  Aliases are compared case-insensitively + whitespace-normalized.
+SUBSECTION_HEADINGS: dict[str, dict[str, list[str]]] = {
+    "scope": {
+        "vision": ["vision", "project vision"],
+        "business_problem": [
+            "business problem",
+            "business problem & current state",
+            "business problem and current state",
+            "current state",
+        ],
+        "success_criteria": ["success criteria"],
+        "in_scope_capabilities": [
+            "in-scope capabilities",
+            "in scope capabilities",
+            "in-scope",
+            "in scope",
+        ],
+        "assumptions": ["assumptions"],
+        "out_of_scope": ["out of scope", "out-of-scope"],
+        "moscow": ["moscow", "moscow classification"],
+        "done_when": [
+            "i know i am done when",
+            "done when",
+            "definition of done",
+        ],
+    },
+    "initiative": {
+        "objective": ["objective"],
+        "release_value": ["release value"],
+        "success_criteria": ["success criteria"],
+        "feature_scope": ["feature scope"],
+        "assumptions": ["assumptions"],
+        "dependencies": ["dependencies"],
+        "out_of_scope": ["out of scope", "out-of-scope"],
+        "artifacts": ["artifacts"],
+        "done_when": [
+            "i know i am done when",
+            "done when",
+            "definition of done",
+        ],
+    },
+    "epic": {
+        "objective": ["objective"],
+        "release_value": ["release value"],
+        "success_criteria": ["success criteria"],
+        "feature_scope": ["feature scope"],
+        "assumptions": ["assumptions"],
+        "dependencies": ["dependencies"],
+        "done_when": [
+            "i know i am done when",
+            "done when",
+            "definition of done",
+        ],
+        "code_areas": ["code areas", "code areas to examine"],
+        "questions_tech_lead": ["questions for tech lead"],
+        "security_compliance": [
+            "security/compliance",
+            "security",
+            "compliance",
+        ],
+    },
+    "story": {
+        "user_story": ["user story"],
+        "tldr": ["tl;dr", "tldr"],
+        "why_this_matters": ["why this matters"],
+        "assumptions": ["assumptions"],
+        "moscow": ["moscow", "moscow classification"],
+        "dependencies": ["dependencies"],
+        "done_when": [
+            "i know i am done when",
+            "done when",
+            "definition of done",
+        ],
+        "acceptance_criteria": ["acceptance criteria"],
+        "constraints": ["constraints"],
+        "implementation_notes": ["implementation notes"],
+        "security_compliance": [
+            "security/compliance",
+            "security",
+            "compliance",
+        ],
+        "subtasks_needed": ["subtasks needed", "subtasks"],
+    },
+    "task": {
+        "summary": ["summary"],
+        "context": ["context"],
+        "done_when": [
+            "i know i am done when",
+            "done when",
+            "definition of done",
+        ],
+        "implementation_notes": ["implementation notes"],
+        "security_compliance": [
+            "security/compliance",
+            "security",
+            "compliance",
+        ],
+    },
+}
+
+# Subsections parsed as a flat list of bullets (vs. free-form paragraphs).
+_BULLET_SUBSECTIONS = {
+    "success_criteria",
+    "assumptions",
+    "out_of_scope",
+    "done_when",
+    "context",
+    "constraints",
+    "artifacts",
+    "questions_tech_lead",
+}
+
+# Subsections parsed as a dict of nested bullet groups (e.g. MoSCoW's
+# Must/Should/Could/Won't Have groups).  Values are sets of group name
+# aliases.
+_NESTED_BULLET_SUBSECTIONS: dict[str, list[str]] = {
+    "moscow": [
+        "must have",
+        "should have",
+        "could have",
+        "won't have",
+        "wont have",
+    ],
+}
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_BULLET_RE = re.compile(r"^\s*[-*]\s+(?:\[[ xX]\]\s*)?(.+?)\s*$")
+_NESTED_GROUP_RE = re.compile(r"^\*\*([^*]+)\*\*\s*:?\s*$")
+
+
+def _parse_subsections(body: str, level: str) -> dict[str, Any]:
+    """Extract recognized subsection content from an item's body.
+
+    Returns a dict keyed by canonical subsection name with shape:
+    - str (paragraph) for most keys
+    - list[str] (bullet items) for keys in `_BULLET_SUBSECTIONS`
+    - dict[str, list[str]] (nested bullets) for keys in
+      `_NESTED_BULLET_SUBSECTIONS` (e.g. MoSCoW -> {must_have: [...],
+      should_have: [...], ...})
+
+    Additionally, non-subsection text before the first recognized heading
+    is stored under `_leading_text` as a fallback for the item's primary
+    narrative field (e.g. Vision for scope, Objective for initiative).
+
+    Safe for plans that don't use subsections: returns `{}` (with
+    `_leading_text` populated if there's any body text).
+    """
+    aliases = SUBSECTION_HEADINGS.get(level, {})
+    alias_map: dict[str, str] = {}
+    for key, names in aliases.items():
+        for alias in names:
+            alias_map[alias.lower()] = key
+
+    result: dict[str, Any] = {}
+    leading: list[str] = []
+    current_key: str | None = None
+    current_lines: list[str] = []
+
+    def _flush_current() -> None:
+        nonlocal current_key, current_lines
+        if current_key is not None:
+            result[current_key] = _normalize_subsection(current_key, current_lines)
+        current_key = None
+        current_lines = []
+
+    for line in body.splitlines():
+        m = _HEADING_RE.match(line)
+        if m:
+            heading_text = m.group(2).strip()
+            heading_key = alias_map.get(heading_text.lower())
+            if heading_key is not None:
+                _flush_current()
+                current_key = heading_key
+                continue
+            # Unknown heading (e.g. `### Approach` inside Implementation
+            # Notes): keep as content rather than starting a new section.
+            if current_key is None:
+                leading.append(line)
+            else:
+                current_lines.append(line)
+            continue
+        if current_key is None:
+            leading.append(line)
+        else:
+            current_lines.append(line)
+    _flush_current()
+
+    leading_text = "\n".join(leading).strip()
+    if leading_text:
+        result["_leading_text"] = leading_text
+    return result
+
+
+def _normalize_subsection(key: str, lines: list[str]) -> Any:
+    """Shape subsection content per key's expected type."""
+    text = "\n".join(lines).strip()
+    if not text:
+        return "" if key not in _BULLET_SUBSECTIONS else []
+
+    if key in _NESTED_BULLET_SUBSECTIONS:
+        return _parse_nested_bullets(text, _NESTED_BULLET_SUBSECTIONS[key])
+
+    if key in _BULLET_SUBSECTIONS:
+        return _parse_bullets(text)
+
+    # Default: paragraph (preserves original formatting + any inline markdown)
+    return text
+
+
+def _parse_bullets(text: str) -> list[str]:
+    """Extract a flat list of bullet items from markdown text."""
+    bullets: list[str] = []
+    for line in text.splitlines():
+        m = _BULLET_RE.match(line)
+        if m:
+            content = m.group(1).strip()
+            if content:
+                bullets.append(content)
+    if not bullets and text.strip():
+        # Paragraph in a bullet-expected section: wrap as single bullet.
+        bullets = [text.strip().replace("\n", " ")]
+    return bullets
+
+
+def _parse_nested_bullets(text: str, group_names: list[str]) -> dict[str, list[str]]:
+    """Parse MoSCoW-style nested bullets with `**Group**:` sub-headers."""
+    result: dict[str, list[str]] = {}
+    current_group: str | None = None
+    current_bullets: list[str] = []
+
+    def _group_key(name: str) -> str:
+        return name.lower().replace("won't", "wont").replace(" ", "_")
+
+    group_keys = {g: _group_key(g) for g in group_names}
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        m = _NESTED_GROUP_RE.match(stripped)
+        if m:
+            heading_lower = m.group(1).strip().lower()
+            if heading_lower in group_names:
+                if current_group is not None:
+                    result[current_group] = current_bullets
+                current_group = group_keys[heading_lower]
+                current_bullets = []
+                continue
+        bullet_m = _BULLET_RE.match(line)
+        if bullet_m and current_group is not None:
+            content = bullet_m.group(1).strip()
+            if content:
+                current_bullets.append(content)
+    if current_group is not None:
+        result[current_group] = current_bullets
     return result
 
 
@@ -401,6 +682,13 @@ def generate_body(
     """Generate a template-compliant issue body for the given item and level."""
     template_text = _load_template(level)
 
+    # Stage 2 (FR #34): ensure structured subsections are parsed before
+    # rendering.  `parse_plan` populates this on every item, but callers
+    # that build their own item dict (e.g. tests, ad hoc scripts) can
+    # skip it — re-parse here as a safety net.
+    if "subsections" not in item:
+        item["subsections"] = _parse_subsections(item.get("description", ""), level)
+
     if template_text:
         body = _render_template(template_text, item, level)
     else:
@@ -433,16 +721,47 @@ def generate_body(
 
 
 def _render_template(template_text: str, item: dict[str, Any], level: str) -> str:
-    """Render an asset template by substituting placeholders."""
+    """Render an asset template by substituting metadata + subsections.
+
+    Two-phase render:
+     1. Flat metadata replacements (title, priority, size, parent ref).
+     2. Per-level subsection fillers that map plan `#### Section` content
+        into the template's placeholder groups (Stage 2 of FR #34).
+
+    Plans without structured subsections retain the previous behavior:
+    the raw description is used as the primary narrative field (Vision
+    for scope, Objective for initiative/epic, TL;DR for story, Summary
+    for task) and other placeholders remain as template text — the
+    Stage 1 P0-4 scanner catches any leaked placeholders before ship.
+    """
     title = item.get("title", "")
     desc = item.get("description", "")
     priority = item.get("priority", "P1")
     size = item.get("size", "M")
     parent = item.get("parent_ref", "")
-    vision_text = desc or "[Vision statement]"
-    obj_text = desc or "[Objective]"
-    summary_text = desc or "[1-sentence summary]"
-    impl_text = desc or "[What this task implements]"
+    subs: dict[str, Any] = item.get("subsections") or {}
+
+    # ----- phase 1: flat metadata replacements -----
+    # The primary narrative field falls back to the leading text from
+    # subsection parsing (content above the first `#### Section`), then
+    # to the whole description for plans that don't use subsections.
+    leading = subs.get("_leading_text", "") or desc
+    vision_text = (
+        subs.get("vision") or leading if level == "scope" else "[Vision statement]"
+    )
+    obj_text = (
+        subs.get("objective") or leading
+        if level in ("initiative", "epic")
+        else "[Objective]"
+    )
+    summary_text = (
+        subs.get("tldr") or leading if level == "story" else "[1-sentence summary]"
+    )
+    impl_text = (
+        subs.get("summary") or leading
+        if level == "task"
+        else "[What this task implements]"
+    )
 
     replacements = {
         "[CODE] [TITLE]": title,
@@ -456,14 +775,14 @@ def _render_template(template_text: str, item: dict[str, Any], level: str) -> st
         "[TIMEFRAME]": "TBD",
         "[OWNER]": "TBD",
         (
-            "[VISION — 1-2 sentences on the end" " state and the value delivered]"
+            "[VISION — 1-2 sentences on the end state and the value delivered]"
         ): vision_text,
         (
-            "[Why this initiative exists and what" " problem it solves — 2-4 sentences]"
+            "[Why this initiative exists and what problem it solves — 2-4 sentences]"
         ): obj_text,
         "[Why this epic exists — 2-4 sentences]": obj_text,
-        ("[1-sentence summary of what" " this story delivers]"): summary_text,
-        ("[1-3 sentences describing exactly" " what this task implements]"): impl_text,
+        "[1-sentence summary of what this story delivers]": summary_text,
+        "[1-3 sentences describing exactly what this task implements]": impl_text,
         "[VERSION]": "TBD",
         "[POINTS]": "TBD",
         "[HOURS]": "TBD",
@@ -472,16 +791,32 @@ def _render_template(template_text: str, item: dict[str, Any], level: str) -> st
         "#[N] [EPIC TITLE]": parent or "TBD",
         "#[N] [STORY TITLE]": parent or "TBD",
         "[Backend/Frontend/Infrastructure/QA]": "Backend",
+        # Stage 2: placeholders in child-linkage table rows that no
+        # downstream code currently expands.  Substitute neutral text so
+        # the P0-4 scanner doesn't flag these cosmetic sample rows.
+        "[DATE]": _dt.date.today().isoformat(),
+        "[DESCRIPTION]": "_(child linkage populated after creation)_",
     }
 
     rendered = template_text
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
 
+    # ----- phase 2: per-level subsection fillers (Stage 2) -----
+    section_fillers: dict[str, Any] = {
+        "scope": _fill_scope_subsections,
+        "initiative": _fill_initiative_subsections,
+        "epic": _fill_epic_subsections,
+        "story": _fill_story_subsections,
+        "task": _fill_task_subsections,
+    }
+    filler = section_fillers.get(level)
+    if filler is not None:
+        rendered = filler(rendered, subs)
+
     # Inject parent reference for levels that have one
     if parent and level in ("epic", "story", "task"):
         if "> **Parent" not in rendered:
-            # Add parent ref after the first heading line
             lines = rendered.split("\n", 1)
             if len(lines) == 2:
                 parent_labels = {
@@ -491,6 +826,428 @@ def _render_template(template_text: str, item: dict[str, Any], level: str) -> st
                 }
                 label = parent_labels.get(level, "Parent")
                 rendered = f"{lines[0]}\n\n> **{label}**: {parent}\n{lines[1]}"
+
+    return rendered
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 (FR #34): Per-level subsection fillers.
+#
+# Each filler function receives the template text after phase-1 metadata
+# substitution + the item's structured subsection dict.  It replaces each
+# placeholder BLOCK (not just the first keyword) with the subsection
+# content when available, or leaves the placeholder intact when the plan
+# didn't provide that subsection (Stage 1 scanner catches leaks; Stage 4
+# will replace remaining placeholders with a TBD marker).
+# ---------------------------------------------------------------------------
+
+
+def _bullet_lines(items: list[str], checkbox: bool = False) -> str:
+    """Format a bullet list as markdown. `checkbox=True` prepends `- [ ]`."""
+    prefix = "- [ ] " if checkbox else "- "
+    return "\n".join(f"{prefix}{i}" for i in items)
+
+
+def _replace_block(rendered: str, old_block: str, new_block: str) -> str:
+    """Replace a verbatim block; no-op when the block isn't present."""
+    if old_block in rendered:
+        return rendered.replace(old_block, new_block, 1)
+    return rendered
+
+
+def _moscow_table_rows(moscow: dict[str, list[str]]) -> str:
+    """Render MoSCoW groups as table rows.  Empty groups keep placeholder."""
+    rows: list[str] = []
+    group_order = [
+        ("must_have", "Must Have"),
+        ("should_have", "Should Have"),
+        ("could_have", "Could Have"),
+        ("wont_have", "Won't Have"),
+    ]
+    for key, label in group_order:
+        items = moscow.get(key) or []
+        if not items:
+            rows.append(f"| {label} | [ITEM] |")
+        else:
+            for item in items:
+                rows.append(f"| {label} | {item} |")
+    return "\n".join(rows)
+
+
+def _fill_scope_subsections(rendered: str, subs: dict[str, Any]) -> str:
+    # Business Problem
+    bp = subs.get("business_problem")
+    if isinstance(bp, str) and bp.strip():
+        rendered = rendered.replace(
+            "[Describe the problem being solved and why the current "
+            "approach is insufficient]",
+            bp,
+        )
+
+    # Success Criteria
+    crit = subs.get("success_criteria") or []
+    if crit:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [CRITERION 1]\n- [ ] [CRITERION 2]",
+            _bullet_lines(crit, checkbox=True),
+        )
+
+    # In-Scope Capabilities
+    in_scope = subs.get("in_scope_capabilities")
+    if in_scope:
+        in_scope_text = (
+            in_scope if isinstance(in_scope, str) else _bullet_lines(in_scope)
+        )
+        rendered = rendered.replace(
+            "[List of features or capabilities included, with references "
+            "to Initiatives/Epics]",
+            in_scope_text,
+        )
+
+    # Assumptions
+    assumptions = subs.get("assumptions") or []
+    if assumptions:
+        rendered = _replace_block(
+            rendered,
+            "- [ASSUMPTION 1]\n- [ASSUMPTION 2]",
+            _bullet_lines(assumptions),
+        )
+
+    # Out of Scope
+    oos = subs.get("out_of_scope") or []
+    if oos:
+        rendered = _replace_block(
+            rendered,
+            "- [ITEM 1]\n- [ITEM 2]",
+            _bullet_lines(oos),
+        )
+
+    # MoSCoW
+    moscow = subs.get("moscow") or {}
+    if isinstance(moscow, dict) and moscow:
+        old_rows = (
+            "| Must Have | [ITEM] |\n"
+            "| Should Have | [ITEM] |\n"
+            "| Could Have | [ITEM] |\n"
+            "| Won't Have | [ITEM] |"
+        )
+        rendered = _replace_block(rendered, old_rows, _moscow_table_rows(moscow))
+
+    # Done When (project-specific criterion)
+    done = subs.get("done_when") or []
+    if done:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [PROJECT-SPECIFIC CRITERION]",
+            _bullet_lines(done, checkbox=True),
+        )
+
+    return rendered
+
+
+def _fill_initiative_subsections(rendered: str, subs: dict[str, Any]) -> str:
+    # Release Value
+    rv = subs.get("release_value")
+    if isinstance(rv, str) and rv.strip():
+        rendered = rendered.replace(
+            "[What becomes possible after this initiative ships — 1-2 sentences]",
+            rv,
+        )
+
+    # Success Criteria
+    crit = subs.get("success_criteria") or []
+    if crit:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [CRITERION 1]\n- [ ] [CRITERION 2]",
+            _bullet_lines(crit, checkbox=True),
+        )
+
+    # Feature Scope (raw paragraph or bullets → single-column rows)
+    fs = subs.get("feature_scope")
+    if fs:
+        fs_block = fs if isinstance(fs, str) else _bullet_lines(fs)
+        rendered = _replace_block(
+            rendered,
+            "| 1 | [FEATURE] | [INCLUDES] | [ENABLES] |",
+            fs_block,
+        )
+
+    # Assumptions
+    assumptions = subs.get("assumptions") or []
+    if assumptions:
+        rendered = _replace_block(
+            rendered,
+            "- [ASSUMPTION 1]\n- [ASSUMPTION 2]",
+            _bullet_lines(assumptions),
+        )
+
+    # Dependencies
+    deps = subs.get("dependencies")
+    if deps:
+        deps_block = deps if isinstance(deps, str) else _bullet_lines(deps)
+        rendered = _replace_block(
+            rendered,
+            "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |",
+            deps_block,
+        )
+
+    # Out of Scope
+    oos = subs.get("out_of_scope") or []
+    if oos:
+        rendered = _replace_block(
+            rendered,
+            "- [ITEM]",
+            _bullet_lines(oos),
+        )
+
+    # Artifacts
+    art = subs.get("artifacts") or []
+    if art:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [ARTIFACT]",
+            _bullet_lines(art, checkbox=True),
+        )
+
+    # Done When
+    done = subs.get("done_when") or []
+    if done:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [PROJECT-SPECIFIC CRITERION]",
+            _bullet_lines(done, checkbox=True),
+        )
+
+    return rendered
+
+
+def _fill_epic_subsections(rendered: str, subs: dict[str, Any]) -> str:
+    # Release Value
+    rv = subs.get("release_value")
+    if isinstance(rv, str) and rv.strip():
+        rendered = rendered.replace(
+            "[What becomes possible after this epic ships — 1-2 sentences]",
+            rv,
+        )
+
+    # Success Criteria
+    crit = subs.get("success_criteria") or []
+    if crit:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [CRITERION 1]\n- [ ] [CRITERION 2]",
+            _bullet_lines(crit, checkbox=True),
+        )
+
+    # Feature Scope
+    fs = subs.get("feature_scope")
+    if fs:
+        fs_block = fs if isinstance(fs, str) else _bullet_lines(fs)
+        rendered = _replace_block(
+            rendered,
+            "| 1 | [FEATURE] | [INCLUDES] | [ENABLES] |",
+            fs_block,
+        )
+
+    # Assumptions
+    assumptions = subs.get("assumptions") or []
+    if assumptions:
+        rendered = _replace_block(
+            rendered,
+            "- [ASSUMPTION 1]",
+            _bullet_lines(assumptions),
+        )
+
+    # Dependencies
+    deps = subs.get("dependencies")
+    if deps:
+        deps_block = deps if isinstance(deps, str) else _bullet_lines(deps)
+        rendered = _replace_block(
+            rendered,
+            "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |",
+            deps_block,
+        )
+
+    # Done When
+    done = subs.get("done_when") or []
+    if done:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [PROJECT-SPECIFIC CRITERION]",
+            _bullet_lines(done, checkbox=True),
+        )
+
+    # Code Areas
+    ca = subs.get("code_areas")
+    if ca:
+        ca_block = ca if isinstance(ca, str) else _bullet_lines(ca)
+        rendered = _replace_block(
+            rendered,
+            "| [TYPE] | [OBJECT] | [LOCATION] | [NOTES] |",
+            ca_block,
+        )
+
+    # Questions for Tech Lead
+    qs = subs.get("questions_tech_lead") or []
+    if qs:
+        rendered = _replace_block(rendered, "- [QUESTION]", _bullet_lines(qs))
+
+    # Security/Compliance
+    sc = subs.get("security_compliance")
+    if isinstance(sc, str) and sc.strip():
+        rendered = rendered.replace(
+            "[Required if this epic involves create/update/delete/"
+            "resolve/write operations]",
+            sc,
+        )
+
+    return rendered
+
+
+def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
+    # User Story block
+    us = subs.get("user_story")
+    if isinstance(us, str) and us.strip():
+        old = "As a [ROLE],\nI want [WHAT],\nSo that [OUTCOME]."
+        rendered = _replace_block(rendered, old, us.strip())
+
+    # Why This Matters
+    wtm = subs.get("why_this_matters")
+    if isinstance(wtm, str) and wtm.strip():
+        rendered = rendered.replace(
+            "[Why this story is needed and what breaks without it — 2-3 sentences]",
+            wtm,
+        )
+
+    # Assumptions (story has a special 3-line format)
+    assumptions = subs.get("assumptions") or []
+    if assumptions:
+        old_block = (
+            "- **Roles**: [WHO uses the output of this story]\n"
+            "- **Starting point**: [Preconditions that must be true]\n"
+            "- **Preconditions**: [What must exist before this story starts]"
+        )
+        rendered = _replace_block(rendered, old_block, _bullet_lines(assumptions))
+
+    # MoSCoW
+    moscow = subs.get("moscow") or {}
+    if isinstance(moscow, dict) and moscow:
+        old_rows = (
+            "| Must Have | [ITEM] |\n"
+            "| Should Have | [ITEM] |\n"
+            "| Could Have | [ITEM] |\n"
+            "| Won't Have | [ITEM] |"
+        )
+        rendered = _replace_block(rendered, old_rows, _moscow_table_rows(moscow))
+
+    # Dependencies
+    deps = subs.get("dependencies")
+    if deps:
+        deps_block = deps if isinstance(deps, str) else _bullet_lines(deps)
+        rendered = _replace_block(
+            rendered,
+            "| #[N] | [DESCRIPTION] | [STATUS] |",
+            deps_block,
+        )
+
+    # Done When
+    done = subs.get("done_when") or []
+    if done:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [ACCEPTANCE CRITERION 1]\n- [ ] [ACCEPTANCE CRITERION 2]",
+            _bullet_lines(done, checkbox=True),
+        )
+
+    # Acceptance Criteria (scenarios)
+    ac = subs.get("acceptance_criteria")
+    if isinstance(ac, str) and ac.strip():
+        old_block = (
+            "**Scenario 1**: [SCENARIO NAME]\n"
+            "- **Given**: [PRECONDITION]\n"
+            "- **When**: [ACTION]\n"
+            "- **Then**: [EXPECTED OUTCOME]"
+        )
+        rendered = _replace_block(rendered, old_block, ac.strip())
+
+    # Constraints
+    constraints = subs.get("constraints") or []
+    if constraints:
+        rendered = _replace_block(
+            rendered,
+            "- [CONSTRAINT]",
+            _bullet_lines(constraints),
+        )
+
+    # Implementation Notes
+    impl = subs.get("implementation_notes")
+    if isinstance(impl, str) and impl.strip():
+        rendered = rendered.replace(
+            "[Technical approach, key considerations]",
+            impl,
+        )
+
+    # Security/Compliance
+    sc = subs.get("security_compliance")
+    if isinstance(sc, str) and sc.strip():
+        rendered = rendered.replace(
+            "[Required if story involves create/update/delete/"
+            "resolve/write operations]",
+            sc,
+        )
+
+    # Subtasks Needed
+    st = subs.get("subtasks_needed")
+    if st:
+        st_block = st if isinstance(st, str) else _bullet_lines(st)
+        rendered = _replace_block(
+            rendered,
+            "| 1 | [TASK] | [PTS] | [YES/NO] |",
+            st_block,
+        )
+
+    return rendered
+
+
+def _fill_task_subsections(rendered: str, subs: dict[str, Any]) -> str:
+    # Context block
+    ctx = subs.get("context") or []
+    if ctx:
+        old_block = (
+            '- **Parent Story AC**: "[The acceptance criterion this '
+            'task satisfies]"\n'
+            "- **Preceding Task**: [#N task that must complete first, or None]\n"
+            "- **Blocking Tasks**: [#N tasks blocked by this one]"
+        )
+        rendered = _replace_block(rendered, old_block, _bullet_lines(ctx))
+
+    # Done When (technical criteria)
+    done = subs.get("done_when") or []
+    if done:
+        rendered = _replace_block(
+            rendered,
+            "- [ ] [TECHNICAL CRITERION 1]\n- [ ] [TECHNICAL CRITERION 2]",
+            _bullet_lines(done, checkbox=True),
+        )
+
+    # Implementation Notes
+    impl = subs.get("implementation_notes")
+    if isinstance(impl, str) and impl.strip():
+        rendered = rendered.replace(
+            "[How to implement this — pseudocode or concrete steps]",
+            impl,
+        )
+
+    # Security/Compliance
+    sc = subs.get("security_compliance")
+    if isinstance(sc, str) and sc.strip():
+        rendered = rendered.replace(
+            "[Required if task involves create/update/delete/"
+            "resolve/write operations]",
+            sc,
+        )
 
     return rendered
 
@@ -1035,6 +1792,32 @@ def _flatten_parsed_hierarchy(hierarchy: dict[str, Any]) -> dict[str, dict[str, 
     return items_by_title
 
 
+def _unified_diff_snippet(
+    before: str, after: str, issue_number: int, max_lines: int = 200
+) -> str:
+    """Return a unified diff between before/after bodies, capped at `max_lines`.
+
+    Keeps the diff short enough to be readable in a report without
+    ballooning the JSON.  When truncated, appends a `... [truncated]`
+    marker so the operator knows there's more.
+    """
+    import difflib
+
+    diff = difflib.unified_diff(
+        before.splitlines(keepends=False),
+        after.splitlines(keepends=False),
+        fromfile=f"issue-{issue_number}-before",
+        tofile=f"issue-{issue_number}-after",
+        lineterm="",
+        n=3,
+    )
+    lines = list(diff)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines.append(f"... [truncated at {max_lines} lines]")
+    return "\n".join(lines)
+
+
 def refresh_backlog(
     plan_path: str,
     repo: str,
@@ -1148,6 +1931,11 @@ def refresh_backlog(
         per_issue_record["status"] = "updated" if not dry_run else "would-update"
         per_issue_record["diff_chars_before"] = len(current_body)
         per_issue_record["diff_chars_after"] = len(new_body)
+
+        # Stage 2 (FR #34): include a real unified diff in the report so
+        # operators can review exactly what would change before running
+        # `--apply` instead of trusting a single char-count delta.
+        per_issue_record["diff"] = _unified_diff_snippet(current_body, new_body, number)
 
         if dry_run:
             report["summary"]["updated"] += 1
