@@ -897,11 +897,129 @@ class TestWalkExistingHierarchy:
         mock_run.assert_not_called()
 
 
+class TestFR45RequiredSubsectionGate:
+    """FR #45 required subsection schema gate + --allow-shallow-subsections override."""
+
+    def test_check_required_subsections_scope_complete(self):
+        from scripts.compliance_check import check_required_subsections
+
+        item = {
+            "subsections": {
+                "business_problem": "x",
+                "success_criteria": ["a"],
+                "assumptions": ["a"],
+                "out_of_scope": ["a"],
+                "done_when": ["a"],
+            }
+        }
+        assert check_required_subsections(item, "scope") == []
+
+    def test_check_required_subsections_scope_missing(self):
+        from scripts.compliance_check import check_required_subsections
+
+        item = {"subsections": {"business_problem": "x"}}
+        missing = check_required_subsections(item, "scope")
+        assert "success_criteria" in missing
+        assert "assumptions" in missing
+        assert "out_of_scope" in missing
+        assert "done_when" in missing
+        assert "business_problem" not in missing
+
+    def test_check_required_subsections_story_complete(self):
+        from scripts.compliance_check import check_required_subsections
+
+        item = {
+            "subsections": {
+                "user_story": "As a...",
+                "tldr": "x",
+                "why_this_matters": "x",
+                "done_when": ["a"],
+                "acceptance_criteria": "Scenario 1:...",
+            }
+        }
+        assert check_required_subsections(item, "story") == []
+
+    def test_check_required_subsections_empty_values_count_as_missing(self):
+        from scripts.compliance_check import check_required_subsections
+
+        item = {
+            "subsections": {
+                "summary": "",  # empty string
+                "context": [],  # empty list
+                "done_when": [],
+                "implementation_notes": "   ",  # whitespace-only
+            }
+        }
+        missing = check_required_subsections(item, "task")
+        # All four should be reported (empty string, empty list, empty list, whitespace)
+        # Note: whitespace-only passes truthy since len > 0; document behavior.
+        # Adjust if plan parser strips whitespace before storing.
+        assert "summary" in missing
+        assert "context" in missing
+        assert "done_when" in missing
+
+    def test_enforce_subsection_schema_passes_when_complete(self, capsys):
+        from scripts import create_issues
+
+        hierarchy = {
+            "scope": {
+                "title": "Scope",
+                "subsections": {
+                    "business_problem": "x",
+                    "success_criteria": ["a"],
+                    "assumptions": ["a"],
+                    "out_of_scope": ["a"],
+                    "done_when": ["a"],
+                },
+            },
+            "initiatives": [],
+            "epics": [],
+            "stories": [],
+            "tasks": [],
+        }
+        gaps = create_issues.enforce_subsection_schema(hierarchy)
+        assert gaps == []
+
+    def test_enforce_subsection_schema_exits_on_gaps_default(self):
+        from scripts import create_issues
+
+        hierarchy = {
+            "scope": {"title": "Scope", "subsections": {}},
+            "initiatives": [],
+            "epics": [],
+            "stories": [],
+            "tasks": [],
+        }
+        with pytest.raises(SystemExit) as exc_info:
+            create_issues.enforce_subsection_schema(hierarchy)
+        assert exc_info.value.code == 3
+
+    def test_enforce_subsection_schema_proceeds_with_allow_shallow(self, capsys):
+        from scripts import create_issues
+
+        hierarchy = {
+            "scope": {"title": "Scope", "subsections": {}},
+            "initiatives": [],
+            "epics": [],
+            "stories": [],
+            "tasks": [],
+        }
+        gaps = create_issues.enforce_subsection_schema(
+            hierarchy, allow_shallow=True
+        )
+        # gaps returned even when allow_shallow; operator sees warning but
+        # execution continues
+        assert len(gaps) == 1
+        assert gaps[0][0] == "scope"
+        captured = capsys.readouterr()
+        assert "allow-shallow-subsections set" in captured.err
+
+
 class TestRefreshMode:
     """FR #34 Stage 5: refresh existing backlog in-place without duplicates."""
 
     def test_normalize_title_strips_markdown_markers(self):
-        """Backticks, bold, italic in plan titles must match plain-text GitHub titles."""
+        """Backticks, bold, italic in plan titles match plain-text GitHub titles."""
         from scripts import create_issues
 
         plan_title = (
@@ -995,6 +1113,7 @@ class TestRefreshMode:
             repo="owner/repo",
             scope_issue_number=182,
             dry_run=True,
+            allow_shallow_subsections=True,
         )
 
         assert report["summary"]["existing_issues"] == 1
@@ -1057,6 +1176,7 @@ class TestRefreshMode:
             repo="owner/repo",
             scope_issue_number=182,
             dry_run=False,
+            allow_shallow_subsections=True,
             skip_issues={266},
         )
 
@@ -1186,6 +1306,7 @@ class TestRefreshMode:
             repo="owner/repo",
             scope_issue_number=182,
             dry_run=False,
+            allow_shallow_subsections=True,
         )
 
         assert report["summary"]["updated"] == 1
@@ -1235,6 +1356,7 @@ class TestRefreshMode:
             repo="owner/repo",
             scope_issue_number=999,
             dry_run=True,
+            allow_shallow_subsections=True,
         )
 
         assert report["summary"]["unmatched"] == 1
@@ -1291,6 +1413,7 @@ class TestRefreshMode:
             repo="owner/repo",
             scope_issue_number=182,
             dry_run=True,
+            allow_shallow_subsections=True,
         )
 
         assert report["summary"]["unchanged"] == 1

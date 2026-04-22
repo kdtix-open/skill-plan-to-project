@@ -196,11 +196,45 @@ Ship the widget core engine that all five providers use.
 Teams can onboard a new provider in under one day instead of one week.
 ```
 
+### Required subsections per level (FR #45)
+
+As of FR #45, the `create` and `refresh` commands enforce a per-level REQUIRED
+subsection list by default. Plans that omit required subsections cause the
+commands to exit non-zero with a per-item gap report, BEFORE any GitHub API
+call is made.
+
+| Level | Required subsections |
+|---|---|
+| Project Scope | `business_problem`, `success_criteria`, `assumptions`, `out_of_scope`, `done_when` |
+| Initiative | `objective`, `release_value`, `success_criteria`, `feature_scope`, `done_when` |
+| Epic | `objective`, `release_value`, `success_criteria`, `done_when` |
+| User Story | `user_story`, `tldr`, `why_this_matters`, `done_when`, `acceptance_criteria` |
+| Task | `summary`, `context`, `done_when`, `implementation_notes` |
+
+These are the MINIMUMS. Operators may add any additional subsections freely.
+
+#### Escape hatch: `--allow-shallow-subsections`
+
+When a plan genuinely cannot meet the required list (emergency seeding, legacy
+plans being refreshed in-place), pass `--allow-shallow-subsections` on either
+`create` or `refresh`. The command prints a warning + the gap list + proceeds.
+Resulting issue bodies will carry template placeholder leaks (flagged by the
+P0-4 scanner).
+
+Use SPARINGLY. Document why in the commit / PR body:
+
+```bash
+python3 -m scripts.create_issues create --plan plan.md --org X --repo X/Y \
+    --project N --allow-shallow-subsections
+```
+
 ### Backward compatibility
 
 Plans without `####` subsections continue to render exactly as they did before
 — the skill falls back to using the item's raw body as the primary narrative
 field. You can adopt the subsection schema on a single plan at a time.
+**Note**: without `--allow-shallow-subsections`, such plans now fail the FR #45
+gate by default.
 
 ## Mermaid Diagrams (FR #40)
 

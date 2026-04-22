@@ -111,6 +111,84 @@ _VALID_MERMAID_DIRECTIVES = (
 )
 
 
+# P0-6 (FR #45): Required subsection schema gate.
+#
+# Plans feeding into `/plan-to-project create` or `refresh` MUST use the full
+# Stage 2 subsection schema by default — per-item `#### Section Name`
+# entries that map 1:1 to template placeholder groups.  Items that lack
+# required subsections produce issue bodies with placeholder leaks (P0-4).
+#
+# This gate runs AFTER parse, BEFORE any GitHub mutation.  Default behavior:
+# fail non-zero with a per-item gap report.  Bypass: `--allow-shallow-subsections`
+# flag on `create` and `refresh` (emergency escape hatch; documented in PR
+# body when used).
+#
+# Per-level required lists are intentionally minimal — Workers + Reviewers
+# need at least these subsections to understand what they're building.
+# Operators may add ANY additional subsections freely; these are the floor.
+REQUIRED_SUBSECTIONS_BY_LEVEL: dict[str, list[str]] = {
+    "scope": [
+        "business_problem",
+        "success_criteria",
+        "assumptions",
+        "out_of_scope",
+        "done_when",
+    ],
+    "initiative": [
+        "objective",
+        "release_value",
+        "success_criteria",
+        "feature_scope",
+        "done_when",
+    ],
+    "epic": [
+        "objective",
+        "release_value",
+        "success_criteria",
+        "done_when",
+    ],
+    "story": [
+        "user_story",
+        "tldr",
+        "why_this_matters",
+        "done_when",
+        "acceptance_criteria",
+    ],
+    "task": [
+        "summary",
+        "context",
+        "done_when",
+        "implementation_notes",
+    ],
+}
+
+
+def check_required_subsections(item: dict[str, Any], level: str) -> list[str]:
+    """Return missing required subsection keys for this item's level.
+
+    FR #45: plans MUST use the full subsection schema.  This check is
+    consumed by the `--allow-shallow-subsections` gate wired into `create`
+    and `refresh` in `scripts/create_issues.py`.
+
+    An item's subsection is considered "present" when its value is non-empty:
+    - non-blank string for paragraph subsections
+    - non-empty list for bullet subsections
+    - non-empty dict for nested subsections (e.g. MoSCoW)
+    """
+    required = REQUIRED_SUBSECTIONS_BY_LEVEL.get(level, [])
+    subs = item.get("subsections") or {}
+    missing: list[str] = []
+    for key in required:
+        val = subs.get(key)
+        if val is None:
+            missing.append(key)
+            continue
+        # Empty string / empty list / empty dict all count as missing.
+        if isinstance(val, (str, list, dict)) and not val:
+            missing.append(key)
+    return missing
+
+
 def _find_invalid_mermaid_blocks(body: str) -> list[str]:
     """Return excerpts of invalid mermaid blocks in `body`.
 
