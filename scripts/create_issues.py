@@ -2175,6 +2175,7 @@ def refresh_backlog(
     repo: str,
     scope_issue_number: int,
     dry_run: bool = True,
+    skip_issues: set[int] | None = None,
 ) -> dict[str, Any]:
     """Patch/upgrade existing backlog issues using the current skill's
     template + parser.  Does NOT create or remove any issues.
@@ -2192,6 +2193,14 @@ def refresh_backlog(
       5. Compare to existing body; if different, emit (dry_run) or apply
          (via gh issue edit) the update.
       6. Report a summary: matched / unmatched / updated / unchanged.
+
+    Args:
+        skip_issues: optional set of issue numbers to exclude from update.
+            Issues in this set are reported as status='skipped' in the
+            per-issue report + never have their bodies re-rendered or
+            updated.  Use when dry-run review identifies specific issues
+            whose existing body should be preserved (e.g. hand-authored
+            content that the template-rendered body would degrade).
     """
     from scripts.gh_helpers import get_issue_body, update_issue_body
 
@@ -2206,9 +2215,18 @@ def refresh_backlog(
             "updated": 0,
             "unchanged": 0,
             "failed": 0,
+            "skipped": 0,
         },
         "per_issue": [],
     }
+
+    skip_set: set[int] = set(skip_issues or set())
+    if skip_set:
+        report["skip_issues"] = sorted(skip_set)
+        print(
+            f"[refresh] skip-list: {sorted(skip_set)} "
+            f"(will be reported as status='skipped')"
+        )
 
     print(
         f"[refresh] walking existing hierarchy rooted at "
@@ -2236,6 +2254,13 @@ def refresh_backlog(
             "title": title,
             "level": level,
         }
+
+        if number in skip_set:
+            per_issue_record["status"] = "skipped"
+            report["summary"]["skipped"] += 1
+            print(f"[refresh] #{number} SKIPPED (in operator skip-list)")
+            report["per_issue"].append(per_issue_record)
+            continue
 
         if not item:
             per_issue_record["status"] = "unmatched"
@@ -2315,9 +2340,10 @@ def refresh_backlog(
         report["per_issue"].append(per_issue_record)
 
     s = report["summary"]
+    skip_summary = f" / {s.get('skipped', 0)} skipped" if s.get("skipped") else ""
     print(
         f"[refresh] DONE — {s['existing_issues']} issues | "
-        f"{s['matched']} matched / {s['unmatched']} unmatched | "
+        f"{s['matched']} matched / {s['unmatched']} unmatched{skip_summary} | "
         f"{s['updated']} {'would-update' if dry_run else 'updated'} / "
         f"{s['unchanged']} unchanged / {s['failed']} failed"
     )
@@ -2326,11 +2352,13 @@ def refresh_backlog(
 
 def _cmd_refresh(args: argparse.Namespace) -> None:
     out = Path(args.output_dir) if args.output_dir else None
+    skip_issues: set[int] = set(getattr(args, "skip_issue", None) or [])
     report = refresh_backlog(
         plan_path=args.plan,
         repo=args.repo,
         scope_issue_number=args.scope_issue,
         dry_run=args.dry_run,
+        skip_issues=skip_issues or None,
     )
     if out:
         out.mkdir(parents=True, exist_ok=True)
@@ -2396,6 +2424,18 @@ def main() -> None:
     )
     p_refresh.add_argument(
         "--output-dir", default=None, help="Output directory for refresh-report.json"
+    )
+    p_refresh.add_argument(
+        "--skip-issue",
+        type=int,
+        action="append",
+        default=None,
+        help=(
+            "Issue number(s) to exclude from refresh (repeatable). "
+            "Skipped issues are reported as status='skipped' and NEVER have "
+            "their bodies re-rendered or updated. Use when dry-run review "
+            "identifies issues whose existing body should be preserved."
+        ),
     )
 
     args = parser.parse_args()
