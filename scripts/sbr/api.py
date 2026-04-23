@@ -24,6 +24,11 @@ import dataclasses
 import datetime as _dt
 import json
 import os
+
+# Regex at module level — WriteBacker uses it for section-surgical
+# replacements.  Aliased to avoid shadowing builtins + to keep the import
+# grouped with the other module-level imports.
+import re as _re  # noqa: E402
 import tempfile
 import uuid
 from collections.abc import Iterable
@@ -33,9 +38,7 @@ from typing import Any, Literal
 # Re-use the skill's canonical walker + parser + template + preserve-zone.
 from scripts.create_issues import (
     _parse_subsections,
-    _preserve_outside_template_zone,
     _walk_existing_hierarchy,
-    generate_body,
 )
 from scripts.gh_helpers import get_issue_body, update_issue_body
 
@@ -126,6 +129,30 @@ class SubsectionReview:
 
 
 @dataclasses.dataclass
+class WriteBackSnapshot:
+    """Pre-write + post-write body snapshot for rollback (2026-04-23 P0).
+
+    Captured synchronously inside WriteBacker.write_back_issue so that the
+    operator can roll back a bad write without depending on GitHub's
+    `userContentEdits` history.  Persisted as part of Session JSON, so
+    rollback survives container restarts and process exits.
+    """
+
+    before_body: str
+    after_body: str
+    written_at: str  # ISO-8601 UTC
+    improvements_applied: list[str] = dataclasses.field(default_factory=list)
+    strategy: str = "surgical"
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> WriteBackSnapshot:
+        return cls(**d)
+
+
+@dataclasses.dataclass
 class IssueReview:
     """One issue under review.  Holds the queue of SubsectionReview items."""
 
@@ -135,6 +162,11 @@ class IssueReview:
     parent_number: int | None = None
     subsections: list[SubsectionReview] = dataclasses.field(default_factory=list)
     write_back_completed: bool = False
+    # Chronological history of write-backs for this issue in THIS session.
+    # Most recent last.  sbr_rollback_write_back pops from the end.
+    write_back_history: list[WriteBackSnapshot] = dataclasses.field(
+        default_factory=list
+    )
 
     @property
     def pending_count(self) -> int:
@@ -159,6 +191,9 @@ class IssueReview:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> IssueReview:
         subs = [SubsectionReview.from_dict(s) for s in d.get("subsections", [])]
+        history = [
+            WriteBackSnapshot.from_dict(h) for h in d.get("write_back_history", [])
+        ]
         return cls(
             number=d["number"],
             title=d["title"],
@@ -166,6 +201,7 @@ class IssueReview:
             parent_number=d.get("parent_number"),
             subsections=subs,
             write_back_completed=d.get("write_back_completed", False),
+            write_back_history=history,
         )
 
 
@@ -636,46 +672,298 @@ class LLMPromptBuilder:
 # ---------------------------------------------------------------------------
 
 
+# Map session subsection keys → the exact `## Header` that delimits that
+# section in a rendered issue body.  Write-back replaces content between
+# consecutive headers; it never regenerates the full body.
+#
+# Coverage: scope + initiative + epic + story + task.  Any subsection key
+# not in this map triggers a fail-loud (we refuse to write rather than
+# risk a misaligned substitution).
+_SUBSECTION_HEADERS: dict[str, str] = {
+    # scope
+    "vision": "## Vision",
+    "business_problem": "## Business Problem & Current State",
+    "success_criteria": "## Success Criteria",
+    "in_scope_capabilities": "## In-Scope Capabilities",
+    "assumptions": "## Assumptions",
+    "out_of_scope": "## Out of Scope",
+    "moscow": "## MoSCoW Classification",
+    "done_when": "## I Know I Am Done When",
+    # initiative + epic (three-level heading inside "## PRODUCT SECTION")
+    "objective": "### Objective",
+    "release_value": "### Release Value",
+    "feature_scope": "### Feature Scope",
+    "dependencies": "### Dependencies",
+    # story
+    "user_story": "## User Story",
+    "tldr": "## TL;DR",
+    "why_this_matters": "## Why This Matters",
+    "acceptance_criteria": "## Acceptance Criteria",
+    "implementation_options": "## Implementation Options",
+    "subtasks_needed": "## Subtasks Needed",
+    # task
+    "summary": "## Summary",
+    "context": "## Context",
+    "implementation_notes": "## Implementation Notes",
+}
+
+
+def _replace_section_in_body(
+    body: str, header: str, new_content: str
+) -> tuple[str, bool]:
+    """Surgically replace the content under `header` (up to the next
+    sibling-or-ancestor header OR the first `---` separator, whichever
+    comes first) with `new_content`.
+
+    Returns `(new_body, replaced)`.  When `header` is not present,
+    returns `(body, False)` without modification — the caller decides
+    whether to raise or skip.
+
+    Matching rule: the section body is everything between `header\n\n`
+    and the NEXT occurrence of `\n---\n` (horizontal-rule separator) OR
+    the next `^#{1,3} ` heading of equal-or-higher level, whichever is
+    nearer.  Most KDTIX issue templates use `---` separators between
+    sections, so that's the common case.
+    """
+    # Anchor on the literal header at line start.
+    header_pattern = _re.compile(r"(?m)^" + _re.escape(header) + r"\s*$")
+    m = header_pattern.search(body)
+    if not m:
+        return body, False
+
+    start = m.end()  # char index just past the header line
+    # Body content starts after the single blank line that follows a
+    # header; tolerate variable whitespace.
+    after_header = body[start:]
+
+    # Find the terminator: next `---` separator or next `^#{1,3} ` heading.
+    hr_pattern = _re.compile(r"\n---\s*\n")
+    next_heading_pattern = _re.compile(r"(?m)^#{1,3}\s")
+
+    hr_match = hr_pattern.search(after_header)
+    next_heading_match = next_heading_pattern.search(after_header)
+
+    # Pick the NEAREST terminator; if neither is found, treat
+    # rest-of-body as the section.
+    candidates = []
+    if hr_match:
+        candidates.append(("hr", hr_match.start(), hr_match.end()))
+    if next_heading_match:
+        candidates.append(
+            ("heading", next_heading_match.start(), next_heading_match.start())
+        )
+
+    if not candidates:
+        terminator_start = terminator_end = len(after_header)
+    else:
+        candidates.sort(key=lambda t: t[1])
+        _kind, terminator_start, terminator_end = candidates[0]
+
+    # Preserve exactly what was there structurally — strip the old body
+    # but keep the header + the terminator (if any).
+    before = body[:start]
+    after = body[start + terminator_end :]
+    # Normalize the new content: trim leading/trailing blank lines so we
+    # get consistent `\n\n<content>\n\n` framing.  strip("\n") also strips
+    # any trailing spaces we don't want leaking into the body.
+    new_body_section = new_content.strip()
+    terminator_text = after_header[terminator_start:terminator_end]
+    # Reassemble.  `before` ends with the header line (no trailing \n
+    # because the regex anchors $ before the newline).  terminator_text
+    # already starts with `\n` for the `---` case and with nothing for
+    # the heading case, so we don't need to synthesize more framing.
+    if terminator_text.startswith("\n"):
+        # terminator begins with its own leading \n (common "---" case)
+        rebuilt = f"{before}\n\n{new_body_section}{terminator_text}{after}"
+    else:
+        # terminator is a bare heading — inject one blank line before it.
+        rebuilt = f"{before}\n\n{new_body_section}\n\n{terminator_text}{after}"
+    return rebuilt, True
+
+
 class WriteBacker:
-    """Assembles the final issue body from a completed IssueReview +
-    commits via `gh issue edit`.
+    """Commit a reviewed issue's verdicts back to GitHub.
 
-    Reuses FR #34 Stage 2.5 `_preserve_outside_template_zone` so operator
-    content outside the template (HTML comments, trailing signatures,
-    sequence-order blockquotes) survives refresh.
+    SURGICAL STRATEGY (2026-04-23 P0 fix, resolves data-loss bug where
+    approved sections were being blanked to template placeholders):
 
-    Stage 1 MVP: single-issue write-back.  Callers iterate issues
-    themselves after session completion.
+    * For each `improved` subsection: replace ONLY that section's content
+      between its `## Header` and the next `---` separator.  Everything
+      outside the touched sections — including every approved section,
+      every skipped section, every pending section, plus operator-authored
+      prefix/suffix content — is preserved byte-for-byte.
+    * For each `approved` subsection: DO NOTHING.  The operator said "leave
+      as-is", so the existing body content is the correct content.
+    * For each `skipped` / `pending`: DO NOTHING.
+
+    This replaces the prior "regenerate whole body from template + fill
+    subsections" strategy, which silently destroyed content when
+    `_load_template` returned empty (e.g. asset files missing from the
+    pip install) and the fallback `_body_scope` stub emitted placeholder
+    text where real content had been.  The regression was first reproduced
+    on issue 182 (9,977 chars → 1,088 chars, all approved content blanked
+    to `[Vision statement]` / `[Criterion 1]` / etc. stubs).
+
+    ROLLBACK ARCHITECTURE (2026-04-23 follow-up): every write-back records
+    a `WriteBackSnapshot(before_body, after_body, written_at, ...)` in
+    `issue.write_back_history` before calling `update_issue_body`.  The
+    snapshot persists with the session JSON so `rollback_write_back` can
+    restore the original body without depending on GitHub's edit-history
+    APIs.
+
+    Why we snapshot rather than query GitHub: the GitHub REST + GraphQL
+    public APIs do NOT expose issue body or comment edit history as
+    queryable text — it's a UI-only feature.  Public surfaces that DO
+    exist (timeline, reactions) don't return the pre-edit body.  Any
+    programmatic rollback of body text MUST be backed by an external
+    snapshot (our session JSON here; webhooks with
+    `issues.edited`/`changes.body.from` are the other canonical pattern
+    for org-wide coverage).  See operator research 2026-04-23.
     """
 
     @staticmethod
     def write_back_issue(session: Session, issue: IssueReview) -> dict[str, Any]:
-        """Commit the approved verdicts for a single issue.  Returns a
-        diff summary for operator review."""
-        # Build the item dict expected by generate_body from the session's
-        # approved/improved content.
-        subsections: dict[str, Any] = {}
-        for sub in issue.subsections:
-            if sub.verdict in ("approved", "improved") and sub.approved_content:
-                subsections[sub.key] = sub.approved_content
-        item = {
-            "title": issue.title,
-            "description": "",  # subsections carry the content
-            "priority": "P1",
-            "size": "M",
-            "subsections": subsections,
-        }
-        new_body = generate_body(item, issue.level)
+        """Commit the reviewed verdicts for a single issue.  Returns a
+        diff summary for operator review.
 
-        # Fetch current body + preserve outside-zone content.
+        Raises ValueError if an improved subsection's header cannot be
+        located in the current body — better to fail loud than silently
+        skip an improvement.
+        """
         current_body = get_issue_body(session.repo, issue.number)
-        merged_body, preserved = _preserve_outside_template_zone(current_body, new_body)
-        update_issue_body(session.repo, issue.number, merged_body)
+        body = current_body
+
+        improvements_applied: list[str] = []
+        improvements_skipped: list[str] = []
+
+        for sub in issue.subsections:
+            if sub.verdict != "improved":
+                # Approved, skipped, and pending sections are not touched.
+                # The existing body content stands.
+                continue
+            if not sub.approved_content:
+                # Defensive — improved verdict without content should not
+                # happen, but skip rather than write an empty section.
+                improvements_skipped.append(f"{sub.key}(empty)")
+                continue
+
+            header = _SUBSECTION_HEADERS.get(sub.key)
+            if header is None:
+                raise ValueError(
+                    f"Cannot write back subsection '{sub.key}' on issue "
+                    f"#{issue.number}: no known header mapping.  Add "
+                    f"'{sub.key}' to _SUBSECTION_HEADERS in scripts/sbr/"
+                    f"api.py, or downgrade its verdict to 'skipped' to "
+                    f"unblock the write-back."
+                )
+
+            body, replaced = _replace_section_in_body(
+                body, header, sub.approved_content
+            )
+            if replaced:
+                improvements_applied.append(sub.key)
+            else:
+                improvements_skipped.append(f"{sub.key}(header-not-found)")
+
+        if improvements_skipped:
+            # Fail loud on header-not-found — otherwise we silently leave
+            # the operator's improvement unrecorded.
+            header_missing = [
+                s for s in improvements_skipped if s.endswith("(header-not-found)")
+            ]
+            if header_missing:
+                raise ValueError(
+                    f"Write-back for issue #{issue.number} could not locate "
+                    f"section headers for: {', '.join(header_missing)}.  "
+                    f"The issue body may not match the KDTIX template "
+                    f"shape; skip these subsections or fix the body "
+                    f"manually before retrying."
+                )
+
+        if body != current_body:
+            update_issue_body(session.repo, issue.number, body)
+            # Snapshot BEFORE + AFTER state for in-tool rollback.  Stored
+            # in the session JSON so recovery survives restarts.
+            snapshot = WriteBackSnapshot(
+                before_body=current_body,
+                after_body=body,
+                written_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+                improvements_applied=list(improvements_applied),
+                strategy="surgical",
+            )
+            issue.write_back_history.append(snapshot)
         issue.write_back_completed = True
         return {
             "issue_number": issue.number,
             "chars_before": len(current_body),
-            "chars_after": len(merged_body),
-            "preserved_prefix_lines": preserved.get("prefix", "").count("\n"),
-            "preserved_suffix_lines": preserved.get("suffix", "").count("\n"),
+            "chars_after": len(body),
+            "improvements_applied": improvements_applied,
+            "improvements_skipped": improvements_skipped,
+            "strategy": "surgical",
+            "rollback_available": bool(issue.write_back_history),
+            "write_back_index": len(issue.write_back_history) - 1
+            if issue.write_back_history
+            else None,
+        }
+
+    @staticmethod
+    def rollback_write_back(
+        session: Session,
+        issue: IssueReview,
+        write_back_index: int | None = None,
+    ) -> dict[str, Any]:
+        """Restore the issue body to the state BEFORE a prior write-back.
+
+        By default rolls back the MOST RECENT write-back (history tail).
+        Pass `write_back_index` to target a specific earlier entry.
+
+        This is an in-tool workflow — it does NOT query GitHub's edit
+        history.  Recovery works only for write-backs that happened during
+        the session currently persisted.  If the session file is lost or
+        the operator wants to restore an older state, they'll need to
+        pull from GitHub's `userContentEdits` manually.
+
+        Returns a diff summary.  Raises ValueError if there's no history
+        to roll back.
+        """
+        if not issue.write_back_history:
+            raise ValueError(
+                f"Issue #{issue.number} has no write-back history in this "
+                f"session — nothing to roll back.  (Sessions only capture "
+                f"snapshots for write-backs performed after 2026-04-23.)"
+            )
+        idx = (
+            write_back_index
+            if write_back_index is not None
+            else len(issue.write_back_history) - 1
+        )
+        if not (0 <= idx < len(issue.write_back_history)):
+            raise ValueError(
+                f"write_back_index {idx} out of range; issue #{issue.number} "
+                f"has {len(issue.write_back_history)} snapshot(s)."
+            )
+        snap = issue.write_back_history[idx]
+
+        # Capture CURRENT body before rollback so the rollback itself is
+        # reversible via another rollback (symmetric).
+        current_body = get_issue_body(session.repo, issue.number)
+        update_issue_body(session.repo, issue.number, snap.before_body)
+        # Record the rollback as its own history entry so the operator
+        # can un-rollback if they changed their mind.
+        rollback_snap = WriteBackSnapshot(
+            before_body=current_body,
+            after_body=snap.before_body,
+            written_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+            improvements_applied=[f"rollback_of_index_{idx}"],
+            strategy="rollback",
+        )
+        issue.write_back_history.append(rollback_snap)
+        return {
+            "issue_number": issue.number,
+            "rolled_back_index": idx,
+            "rolled_back_written_at": snap.written_at,
+            "chars_before_rollback": len(current_body),
+            "chars_after_rollback": len(snap.before_body),
+            "strategy": "rollback",
+            "new_history_length": len(issue.write_back_history),
         }

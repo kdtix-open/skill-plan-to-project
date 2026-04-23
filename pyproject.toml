@@ -27,7 +27,20 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["scripts", "scripts.sbr"]
+packages = ["scripts", "scripts.sbr", "assets"]
+include-package-data = true
+
+# Bundle the KDTIX markdown templates + icon with the wheel so
+# scripts.create_issues._load_template() can find them after a
+# pip install.  Fixes the 2026-04-23 P0: the hosted SBR container's
+# site-packages lacked `assets/` entirely, _load_template returned
+# "", and generate_body silently fell through to _body_scope (which
+# emits placeholder stubs that blanked issue #182 from 9,977 → 1,088
+# chars).  The WriteBacker was also rewritten to a surgical section-
+# replace strategy that doesn't depend on templates — so even if
+# packaging breaks again, write-back stays data-safe.
+[tool.setuptools.package-data]
+assets = ["*.md", "*.mdc", "*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["scripts/tests"]

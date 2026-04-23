@@ -1027,6 +1027,50 @@ def _build_server(
         mgr._atomic_write(session)
         return {"write_back_count": len(results), "results": results}
 
+    @mcp.tool()
+    def sbr_rollback_write_back(
+        session_id: str,
+        issue_number: int,
+        write_back_index: int | None = None,
+    ) -> dict[str, Any]:
+        """Restore a GitHub issue to its pre-write-back state.
+
+        Use when the operator says: "roll back", "undo the write back",
+        "restore issue N", "oops revert that", "put it back the way it was".
+
+        By default rolls back the MOST RECENT write-back for the given
+        issue in THIS session.  Pass `write_back_index` to target an
+        earlier snapshot (0-indexed, matches the order write-backs were
+        performed in this session).
+
+        This is an IN-TOOL rollback — it reads the pre-write body text
+        from the session JSON we captured when sbr_write_back ran.  It
+        does NOT query GitHub's edit history, so the rollback is
+        deterministic + works even when GitHub's API is flaky, AND it
+        survives container restarts because the snapshots live in the
+        persisted session file.
+
+        The rollback itself is recorded as a new history entry, so calling
+        rollback again undoes the rollback (symmetric).
+
+        Raises an error if the target issue has no recorded write-backs
+        in this session (e.g. rolling back a write-back that happened in
+        a previous session — use GitHub's userContentEdits for those).
+
+        Snapshot coverage: all write-backs performed on or after 2026-04-23
+        (when this feature shipped).
+        """
+        session = mgr.load(session_id)
+        issue = next((i for i in session.issues if i.number == issue_number), None)
+        if issue is None:
+            raise ValueError(
+                f"issue #{issue_number} is not part of session {session_id}. "
+                f"Available: {[i.number for i in session.issues]}"
+            )
+        result = WriteBacker.rollback_write_back(session, issue, write_back_index)
+        mgr._atomic_write(session)
+        return result
+
     return mcp
 
 

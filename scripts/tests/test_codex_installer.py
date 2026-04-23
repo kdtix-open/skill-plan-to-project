@@ -53,9 +53,21 @@ class TestCodexInstaller:
         pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
         pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
 
+        # 2026-04-23: "assets" added so template-*.md ship with the wheel.
+        # Before that the hosted SBR container had no templates on disk,
+        # generate_body fell through to _body_scope placeholder stubs, and
+        # issue #182 got blanked on write-back.  See scripts/sbr/api.py
+        # WriteBacker docstring.
         assert pyproject["tool"]["setuptools"]["packages"] == [
             "scripts",
             "scripts.sbr",
+            "assets",
+        ]
+        assert pyproject["tool"]["setuptools"]["include-package-data"] is True
+        assert pyproject["tool"]["setuptools"]["package-data"]["assets"] == [
+            "*.md",
+            "*.mdc",
+            "*.png",
         ]
 
     def test_home_skill_installs_under_codex_home(self, tmp_path: Path) -> None:

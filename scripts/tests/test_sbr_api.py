@@ -383,10 +383,23 @@ class TestWriteBacker:
         )
         session.issues = [issue]
 
+        # Realistic body — has ## User Story header + ## TL;DR header with
+        # `---` separators.  The surgical WriteBacker (2026-04-23) locates
+        # the ## User Story section and replaces its body; the ## TL;DR
+        # section is approved and must NOT be touched.
+        current_body = (
+            "# Story: Test\n\n"
+            "> **Status**: Backlog\n\n"
+            "---\n\n"
+            "## User Story\n\n"
+            "old As-a block\n\n"
+            "---\n\n"
+            "## TL;DR\n\n"
+            "Summary one-liner.\n\n"
+            "---\n"
+        )
         with (
-            patch.object(
-                api, "get_issue_body", return_value="# User Story: Test\n\nOld body."
-            ),
+            patch.object(api, "get_issue_body", return_value=current_body),
             patch.object(api, "update_issue_body") as upd,
         ):
             result = api.WriteBacker.write_back_issue(session, issue)
@@ -397,8 +410,242 @@ class TestWriteBacker:
         assert args[0] == "owner/repo"
         assert args[1] == 101
         new_body = args[2]
-        # Improved content appears in the rendered body
+        # Improved content appears in the new body
         assert "As a developer" in new_body
-        # WriteBacker returns diff summary
+        # Approved content is NOT re-written — surgical strategy leaves it
+        # untouched byte-for-byte.
+        assert "Summary one-liner." in new_body
+        # Old As-a block is GONE (the improved subsection replaced it)
+        assert "old As-a block" not in new_body
+        # WriteBacker returns diff summary with new strategy signal
         assert result["issue_number"] == 101
+        assert result["strategy"] == "surgical"
+        assert result["improvements_applied"] == ["user_story"]
         assert issue.write_back_completed is True
+
+    def test_write_back_skips_approved_sections_untouched(self, tmp_path):
+        """Regression — 2026-04-23 UAT bug: issue #182 lost approved
+        content when write-back regenerated the whole body from template
+        + template-loading failed silently.  The fix is a surgical
+        strategy that leaves approved sections byte-identical."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s2",
+            scope_issue_number=200,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        # Two sections: one approved (must stay EXACTLY as-is), one improved
+        # (must replace its body only).
+        issue = IssueReview(
+            number=201,
+            title="Project Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="approved",
+                    original_content="Vision body that must survive unchanged.",
+                    approved_content="Vision body that must survive unchanged.",
+                ),
+                SubsectionReview(
+                    key="business_problem",
+                    verdict="improved",
+                    original_content="Old problem statement.",
+                    approved_content="NEW problem statement with more detail.",
+                ),
+            ],
+        )
+        session.issues = [issue]
+
+        current_body = (
+            "<!-- custom operator comment -->\n\n"
+            "# Project Scope: Test\n\n"
+            "> **Status**: Backlog\n\n"
+            "---\n\n"
+            "## Vision\n\n"
+            "Vision body that must survive unchanged.\n\n"
+            "---\n\n"
+            "## Business Problem & Current State\n\n"
+            "Old problem statement.\n\n"
+            "---\n"
+        )
+        captured = {}
+        with (
+            patch.object(api, "get_issue_body", return_value=current_body),
+            patch.object(
+                api,
+                "update_issue_body",
+                side_effect=lambda r, n, b: captured.update(body=b),
+            ),
+        ):
+            api.WriteBacker.write_back_issue(session, issue)
+
+        new_body = captured["body"]
+        # Approved vision section: content unchanged, character-exact.
+        assert (
+            "## Vision\n\nVision body that must survive unchanged.\n\n---" in new_body
+        )
+        # Improved business_problem: new content replaces old.
+        assert "NEW problem statement with more detail." in new_body
+        assert "Old problem statement." not in new_body
+        # Operator's pre-heading comment is preserved.
+        assert new_body.startswith("<!-- custom operator comment -->")
+
+    def test_write_back_raises_when_improved_header_not_found(self, tmp_path):
+        """Fail-loud: an improved subsection whose header isn't in the
+        body MUST raise, not silently drop.  Otherwise the operator's
+        improvement is lost without feedback."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s3",
+            scope_issue_number=300,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(
+            number=301,
+            title="Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="improved",
+                    original_content="old",
+                    approved_content="new vision",
+                ),
+            ],
+        )
+        session.issues = [issue]
+
+        # Body has NO ## Vision header — surgical writeback must raise.
+        current_body = (
+            "# Scope: Test\n\nJust some content without the expected section.\n"
+        )
+        with (
+            patch.object(api, "get_issue_body", return_value=current_body),
+            patch.object(api, "update_issue_body") as upd,
+            pytest.raises(ValueError, match="could not locate section headers"),
+        ):
+            api.WriteBacker.write_back_issue(session, issue)
+        assert not upd.called  # did NOT write a corrupted body
+
+    def test_write_back_captures_rollback_snapshot(self, tmp_path):
+        """Regression — 2026-04-23 operator ask: capture pre-write body
+        in-session so rollback works without GitHub edit history."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s4",
+            scope_issue_number=400,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(
+            number=401,
+            title="Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="improved",
+                    original_content="old",
+                    approved_content="new vision content",
+                ),
+            ],
+        )
+        session.issues = [issue]
+        before = (
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n"
+            "## Vision\n\nold\n\n---\n"
+        )
+        with (
+            patch.object(api, "get_issue_body", return_value=before),
+            patch.object(api, "update_issue_body"),
+        ):
+            result = api.WriteBacker.write_back_issue(session, issue)
+
+        assert result["rollback_available"] is True
+        assert result["write_back_index"] == 0
+        assert len(issue.write_back_history) == 1
+        snap = issue.write_back_history[0]
+        assert snap.before_body == before
+        assert "new vision content" in snap.after_body
+        assert snap.strategy == "surgical"
+        assert snap.improvements_applied == ["vision"]
+
+    def test_rollback_restores_pre_write_body(self, tmp_path):
+        """sbr_rollback_write_back replays the captured before_body."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s5",
+            scope_issue_number=500,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(
+            number=501,
+            title="Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="improved",
+                    original_content="old",
+                    approved_content="new vision content",
+                ),
+            ],
+        )
+        session.issues = [issue]
+        before = (
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n"
+            "## Vision\n\nold\n\n---\n"
+        )
+        captured_writes: list[str] = []
+        with (
+            patch.object(api, "get_issue_body", return_value=before),
+            patch.object(
+                api,
+                "update_issue_body",
+                side_effect=lambda r, n, b: captured_writes.append(b),
+            ),
+        ):
+            api.WriteBacker.write_back_issue(session, issue)
+
+        # Now roll it back.  GET returns the new (post-write) body; rollback
+        # must call update with the ORIGINAL before_body.
+        post_write_body = captured_writes[-1]
+        with (
+            patch.object(api, "get_issue_body", return_value=post_write_body),
+            patch.object(
+                api,
+                "update_issue_body",
+                side_effect=lambda r, n, b: captured_writes.append(b),
+            ),
+        ):
+            rb = api.WriteBacker.rollback_write_back(session, issue)
+
+        assert rb["strategy"] == "rollback"
+        assert rb["rolled_back_index"] == 0
+        # The restore call wrote the original `before` body to GitHub.
+        assert captured_writes[-1] == before
+        # History now has two entries: the original write + the rollback.
+        assert len(issue.write_back_history) == 2
+        assert issue.write_back_history[1].strategy == "rollback"
+
+    def test_rollback_raises_when_no_history(self, tmp_path):
+        from scripts.sbr.api import IssueReview, Session
+
+        session = Session(
+            session_id="s6",
+            scope_issue_number=600,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(number=601, title="Scope: Test", level="scope")
+        session.issues = [issue]
+        with pytest.raises(ValueError, match="no write-back history"):
+            api.WriteBacker.rollback_write_back(session, issue)
