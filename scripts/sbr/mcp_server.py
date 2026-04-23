@@ -59,6 +59,78 @@ except ImportError:  # pragma: no cover — import-time graceful failure
 
 from scripts.sbr.api import SessionManager, WriteBacker
 
+# ---------------------------------------------------------------------------
+# Argument normalization for the start-session family of tools.
+#
+# The voice model picks natural-sounding argument names on first try, and
+# each Real Observation from UAT transcripts is listed here as a comment.
+# Canonical outputs are (scope_issue_number, repo).  Every alias below has
+# earned its place by appearing at least once in a real UAT transcript —
+# adding more without that signal is YAGNI bloat.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_start_args(
+    *,
+    scope_issue_number: int | None = None,
+    repo: str | None = None,
+    scope_id: int | None = None,
+    issue_number: int | None = None,
+    organization: str | None = None,
+    repository: str | None = None,
+    queue_name: str | None = None,
+    project_queue: str | None = None,
+) -> tuple[int, str | None]:
+    """Reduce aliases → canonical (scope_issue_number, repo).
+
+    Raises ValueError when scope_issue_number is unresolvable.  Returns
+    repo=None if no repo-ish arg was supplied; callers then rely on the
+    downstream validator for the format-specific error message.
+    """
+    log = logging.getLogger("sbr-mcp.normalize_start_args")
+
+    # scope_issue_number ← first non-None of (canonical, observed aliases)
+    scope_value = scope_issue_number or scope_id or issue_number
+    if scope_value is None:
+        raise ValueError(
+            "scope_issue_number is required — the GitHub issue number of "
+            "the Project Scope to review (e.g. 182).  Pass as "
+            "scope_issue_number=182.  Aliases also accepted: scope_id, "
+            "issue_number."
+        )
+
+    # repo normalization — four cases in order of specificity:
+    if not repo:
+        if organization and repository and "/" not in repository:
+            # Split org + short name → join.
+            repo = f"{organization}/{repository}"
+            log.info(
+                "normalized split organization+repository to repo",
+                extra={"repo": repo},
+            )
+        elif repository and "/" in repository:
+            # `repository` already in owner/name form (common STT output).
+            repo = repository
+            log.info(
+                "accepted already-slashed repository alias as repo",
+                extra={"repo": repo},
+            )
+        else:
+            repo = queue_name or project_queue
+
+    # STT caps normalization — GitHub repo names are case-insensitive but
+    # cached lookups + some API surfaces care.  Lowercase defensively.
+    if isinstance(repo, str):
+        lower = repo.lower()
+        if lower != repo:
+            log.info(
+                "normalized STT caps in repo",
+                extra={"before": repo, "after": lower},
+            )
+            repo = lower
+
+    return scope_value, repo
+
 
 class BearerTokenVerifier:
     """Constant-time Bearer token verifier for hosted HTTP/SSE transport.
@@ -189,99 +261,43 @@ def _build_server(
         scope_issue_number: int | None = None,
         repo: str | None = None,
         skip_issues: list[int] | None = None,
-        # --- Aliases for voice-agent flexibility ------------------------
-        # The voice model often picks natural-sounding names.  Accept the
-        # variants observed in production + normalize to the canonical
-        # fields below.  Docstring warns the model NOT to use these, but
-        # if it does, we find the intent instead of hard-failing.
-        scope_id: int | None = None,
-        scope: int | None = None,
-        issue_number: int | None = None,
-        item_id: int | None = None,
-        organization: str | None = None,
-        organisation: str | None = None,  # British spelling
-        org: str | None = None,
-        repository: str | None = None,
-        repo_name: str | None = None,
-        queue_name: str | None = None,
-        project_queue: str | None = None,
-        project_queue_name: str | None = None,
+        # Aliases — ONLY those observed in real UAT transcripts.  Each
+        # one has a date comment so we can tell whether trimming is
+        # safe later.
+        scope_id: int | None = None,  # 2026-04-22
+        issue_number: int | None = None,  # 2026-04-22
+        organization: str | None = None,  # 2026-04-23 (with `repository`)
+        repository: str | None = None,  # 2026-04-23 (sometimes full slash)
+        queue_name: str | None = None,  # 2026-04-22
+        project_queue: str | None = None,  # 2026-04-22
     ) -> dict[str, Any]:
         """Start a new Sprint Backlog Review session rooted at a Project Scope issue.
 
-        CANONICAL args (use these — do NOT use aliases):
+        CANONICAL args:
             scope_issue_number: The Project Scope issue number (e.g. 182).
-            repo: owner/name in GitHub's format (e.g. "kdtix-open/agent-project-queue").
+            repo: owner/name (e.g. "kdtix-open/agent-project-queue").
 
-        Aliases accepted for voice-agent flexibility — the model should
-        still prefer the canonical names above, but these variants are
-        tolerated so one slip doesn't kill the session:
-            scope_id, scope, issue_number, item_id → scope_issue_number
-            organization + repository, org + repo_name → joined as owner/name
-            queue_name, project_queue(_name) → repo (if already in owner/name form)
-
-        PHONETIC variations the voice STT sometimes produces:
-            "KD-TX-Open", "KDTIX OPEN", "KAYDEETIX-OPEN" → kdtix-open
-            Always lowercase + hyphenate.
+        Tolerated aliases (model can slip once without dying):
+            scope_id, issue_number → scope_issue_number
+            organization + repository → joined as owner/name
+            repository alone (already slashed) → repo
+            queue_name, project_queue → repo
 
         Returns:
             {session_id, queue_size, scope_issue_number, repo,
              warning?: str if queue is empty}
         """
         tool_log = logging.getLogger("sbr-mcp.sbr_start_session")
-
-        # Normalize scope_issue_number aliases — pick the first non-None.
-        scope_issue_number = (
-            scope_issue_number or scope_id or scope or issue_number or item_id
+        scope_issue_number, repo = _normalize_start_args(
+            scope_issue_number=scope_issue_number,
+            repo=repo,
+            scope_id=scope_id,
+            issue_number=issue_number,
+            organization=organization,
+            repository=repository,
+            queue_name=queue_name,
+            project_queue=project_queue,
         )
-        if scope_issue_number is None:
-            raise ValueError(
-                "scope_issue_number is required — the GitHub issue number "
-                "of the Project Scope to review (e.g. 182).  Pass as "
-                "`scope_issue_number=182`.  "
-                "Also accepted (will be normalized): scope_id, scope, "
-                "issue_number, item_id."
-            )
-
-        # Normalize repo aliases.
-        if not repo:
-            org_value = organization or organisation or org
-            repo_part = repository or repo_name
-            # Case A: split org + short repo name → join with slash.
-            if org_value and repo_part and "/" not in repo_part:
-                repo = f"{org_value}/{repo_part}"
-                tool_log.info(
-                    "normalized split organization+repository to repo",
-                    extra={"repo": repo},
-                )
-            # Case B: the "repository" arg already contains a slash
-            # (full owner/name form) → accept as-is.  This was a bug
-            # discovered during 2026-04-23 UAT: model passed
-            # repository="kdtix-open/agent-project-queue" with no
-            # organization, and the code fell through to the queue_name
-            # branch + left repo=None.
-            elif repo_part and "/" in repo_part:
-                repo = repo_part
-                tool_log.info(
-                    "accepting repository arg as already-slashed repo",
-                    extra={"repo": repo},
-                )
-            else:
-                repo = queue_name or project_queue or project_queue_name
-
-        # STT often produces caps-y variants ("KDTIX-open/Agent-Project-QUE")
-        # because it treats the hyphenated word as an abbreviation.  The
-        # GitHub-canonical form is lowercase.  Lowercase defensively —
-        # GitHub is case-insensitive on repo names anyway, but the
-        # capitalization difference can trip up cached lookups.
-        if repo and isinstance(repo, str):
-            lower = repo.lower()
-            if lower != repo:
-                tool_log.info(
-                    "normalized STT caps in repo",
-                    extra={"before": repo, "after": lower},
-                )
-                repo = lower
 
         # Validate repo format up-front so operators get a clear error
         # instead of a silent empty queue (the server would otherwise
@@ -606,36 +622,24 @@ def _build_server(
         repo: str | None = None,
         skip_issues: list[int] | None = None,
         scope_id: int | None = None,
-        scope: int | None = None,
         issue_number: int | None = None,
-        item_id: int | None = None,
         organization: str | None = None,
-        organisation: str | None = None,
-        org: str | None = None,
         repository: str | None = None,
-        repo_name: str | None = None,
         queue_name: str | None = None,
         project_queue: str | None = None,
-        project_queue_name: str | None = None,
     ) -> dict[str, Any]:
-        """Alias for sbr_start_session — matches the 2nd-try hallucination
-        'sbr_review' seen in 2026-04-23 UAT.  Same args, same behavior."""
+        """Alias for sbr_start_session — matches 'sbr_review' 2nd-try
+        hallucination (2026-04-23 UAT).  Same canonical contract."""
         return sbr_start_session(
             scope_issue_number=scope_issue_number,
             repo=repo,
             skip_issues=skip_issues,
             scope_id=scope_id,
-            scope=scope,
             issue_number=issue_number,
-            item_id=item_id,
             organization=organization,
-            organisation=organisation,
-            org=org,
             repository=repository,
-            repo_name=repo_name,
             queue_name=queue_name,
             project_queue=project_queue,
-            project_queue_name=project_queue_name,
         )
 
     @mcp.tool()
@@ -644,37 +648,24 @@ def _build_server(
         repo: str | None = None,
         skip_issues: list[int] | None = None,
         scope_id: int | None = None,
-        scope: int | None = None,
         issue_number: int | None = None,
-        item_id: int | None = None,
         organization: str | None = None,
-        organisation: str | None = None,
-        org: str | None = None,
         repository: str | None = None,
-        repo_name: str | None = None,
         queue_name: str | None = None,
         project_queue: str | None = None,
-        project_queue_name: str | None = None,
     ) -> dict[str, Any]:
-        """Alias for sbr_start_session — matches the operator's natural
-        phrase "start SBR review".  Same args, same behavior.  The
-        voice agent often prefers this name; both are supported."""
+        """Alias for sbr_start_session — matches operator's natural
+        phrase "start SBR review".  Same canonical contract."""
         return sbr_start_session(
             scope_issue_number=scope_issue_number,
             repo=repo,
             skip_issues=skip_issues,
             scope_id=scope_id,
-            scope=scope,
             issue_number=issue_number,
-            item_id=item_id,
             organization=organization,
-            organisation=organisation,
-            org=org,
             repository=repository,
-            repo_name=repo_name,
             queue_name=queue_name,
             project_queue=project_queue,
-            project_queue_name=project_queue_name,
         )
 
     @mcp.tool()
@@ -747,27 +738,20 @@ def _build_server(
     def sbr_improve(
         session_id: str,
         new_content: str | None = None,
-        # Aliases the voice model commonly produces instead of new_content.
-        # See ARGUMENT NAMING cheatsheet in the system prompt.
+        # Aliases — ONLY those observed in UAT transcripts (2026-04-23).
         suggestion: str | None = None,
         suggested_content: str | None = None,
         new_text: str | None = None,
         content: str | None = None,
         improvement: str | None = None,
         text: str | None = None,
-        body: str | None = None,
-        prose: str | None = None,
-        replacement: str | None = None,
-        updated_content: str | None = None,
     ) -> dict[str, Any]:
         """Replace the current subsection with improved content + advance.
 
-        CANONICAL signature:
-            sbr_improve(session_id: str, new_content: str)
+        CANONICAL: sbr_improve(session_id=str, new_content=str)
 
-        Aliases accepted (normalized to new_content):
-            suggestion, suggested_content, new_text, content, improvement,
-            text, body, prose, replacement, updated_content
+        Tolerated aliases (normalized to new_content):
+            suggestion, suggested_content, new_text, content, improvement, text
         """
         resolved_content = (
             new_content
@@ -777,18 +761,13 @@ def _build_server(
             or content
             or improvement
             or text
-            or body
-            or prose
-            or replacement
-            or updated_content
         )
         if not resolved_content:
             raise ValueError(
                 "sbr_improve requires the replacement prose.  Pass it as "
                 "new_content (e.g. sbr_improve(session_id='abc', "
                 "new_content='...')).  Aliases also accepted: suggestion, "
-                "suggested_content, new_text, content, improvement, text, "
-                "body, prose, replacement, updated_content."
+                "suggested_content, new_text, content, improvement, text."
             )
         session = mgr.load(session_id)
         mgr.apply_verdict(session, "improved", improved_content=resolved_content)
