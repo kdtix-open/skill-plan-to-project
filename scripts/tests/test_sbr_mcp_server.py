@@ -18,6 +18,76 @@ class TestMainGracefulFallback:
         assert "mcp" in err.lower() and "install" in err.lower()
 
 
+class TestNormalizeStartArgs:
+    """Pure-function coverage for the alias normalizer.
+
+    Observed-in-UAT aliases only — these map every voice-dictated variant
+    we saw during 2026-04-22/23 UAT down to (scope_issue_number, repo).
+    """
+
+    def test_canonical_pair_passes_through(self):
+        n, r = mcp_server._normalize_start_args(
+            scope_issue_number=182, repo="kdtix-open/agent-project-queue"
+        )
+        assert n == 182
+        assert r == "kdtix-open/agent-project-queue"
+
+    def test_scope_id_alias_resolves_to_canonical(self):
+        n, _ = mcp_server._normalize_start_args(scope_id=42, repo="o/r")
+        assert n == 42
+
+    def test_issue_number_alias_resolves_to_canonical(self):
+        n, _ = mcp_server._normalize_start_args(issue_number=99, repo="o/r")
+        assert n == 99
+
+    def test_missing_scope_raises_value_error(self):
+        with pytest.raises(ValueError, match="scope_issue_number is required"):
+            mcp_server._normalize_start_args(repo="o/r")
+
+    def test_split_organization_and_short_repository(self):
+        """Voice models sometimes emit organization + bare repository."""
+        _, r = mcp_server._normalize_start_args(
+            scope_issue_number=1,
+            organization="kdtix-open",
+            repository="agent-project-queue",
+        )
+        assert r == "kdtix-open/agent-project-queue"
+
+    def test_preslashed_repository_accepted(self):
+        """Regression — 2026-04-23: model also emits already-slashed."""
+        _, r = mcp_server._normalize_start_args(
+            scope_issue_number=1,
+            repository="kdtix-open/agent-project-queue",
+        )
+        assert r == "kdtix-open/agent-project-queue"
+
+    def test_queue_name_alias(self):
+        _, r = mcp_server._normalize_start_args(
+            scope_issue_number=1,
+            queue_name="o/r",
+        )
+        assert r == "o/r"
+
+    def test_project_queue_alias(self):
+        _, r = mcp_server._normalize_start_args(
+            scope_issue_number=1,
+            project_queue="o/r",
+        )
+        assert r == "o/r"
+
+    def test_stt_caps_normalized_to_lowercase(self):
+        """Regression — 2026-04-22: 'KDTIX-open/agent-project-QUE'."""
+        _, r = mcp_server._normalize_start_args(
+            scope_issue_number=1,
+            repo="KDTIX-open/agent-project-QUEUE",
+        )
+        assert r == "kdtix-open/agent-project-queue"
+
+    def test_no_repo_returns_none_for_downstream_validator(self):
+        _, r = mcp_server._normalize_start_args(scope_issue_number=1)
+        assert r is None
+
+
 @pytest.mark.skipif(
     mcp_server.FastMCP is None, reason="mcp SDK not installed in this env"
 )

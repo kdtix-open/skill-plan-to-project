@@ -472,11 +472,21 @@ class SessionManager:
         session: Session,
         verdict: Verdict,
         improved_content: str | None = None,
-    ) -> None:
-        """Mark current subsection with verdict + advance cursor + persist."""
+    ) -> bool:
+        """Mark current subsection with verdict + advance cursor + persist.
+
+        Returns:
+            True if the verdict was applied (cursor advanced); False if
+            the call was a no-op (session not active OR queue empty).
+            Callers use the return value to report the real outcome
+            instead of silently claiming success — the Stage 1.5 UAT
+            2026-04-23 surfaced a bug where sbr_approve responded
+            "approved" on a paused session while the server quietly
+            dropped the verdict.
+        """
         pair = self.get_current_subsection(session)
         if pair is None:
-            return
+            return False
         _issue, sub = pair
         sub.verdict = verdict
         if verdict == "improved" and improved_content is not None:
@@ -486,6 +496,7 @@ class SessionManager:
         # Advance cursor
         session.current_subsection_index += 1
         self._atomic_write(session)
+        return True
 
     def go_back(self, session: Session) -> None:
         """Move cursor back one subsection (across issue boundaries).

@@ -680,13 +680,25 @@ def _build_server(
         pair = mgr.get_current_subsection(session)
         mgr._atomic_write(session)  # persist lazy-populated subsections
         if pair is None:
+            if session.status == "paused":
+                msg = (
+                    "Session is PAUSED.  Call sbr_resume before advancing.  "
+                    "No subsection is currently queued."
+                )
+            elif session.status == "terminated":
+                msg = (
+                    "Session was terminated.  Start a new review via "
+                    "sbr_start_session."
+                )
+            else:
+                msg = (
+                    "Session complete.  Run sbr_write_back to commit approved "
+                    "verdicts, or sbr_terminate to discard."
+                )
             return {
                 "has_next": False,
                 "status": session.status,
-                "message": (
-                    "Session complete.  Run sbr_write_back to commit approved "
-                    "verdicts, or sbr_terminate to discard."
-                ),
+                "message": msg,
             }
         issue, sub = pair
         return {
@@ -731,7 +743,23 @@ def _build_server(
         GitHub until sbr_write_back is called at the end.
         """
         session = mgr.load(session_id)
-        mgr.apply_verdict(session, "approved")
+        applied = mgr.apply_verdict(session, "approved")
+        if not applied:
+            return {
+                "status": "no_op",
+                "session_status": session.status,
+                "reason": (
+                    f"session is {session.status}"
+                    if session.status != "active"
+                    else "no current subsection"
+                ),
+                "message": (
+                    f"Cannot approve — session is {session.status}.  "
+                    "Call sbr_resume first."
+                    if session.status == "paused"
+                    else f"Cannot approve — session is {session.status}."
+                ),
+            }
         return {"status": "approved", "session_status": session.status}
 
     @mcp.tool()
@@ -770,7 +798,25 @@ def _build_server(
                 "suggested_content, new_text, content, improvement, text."
             )
         session = mgr.load(session_id)
-        mgr.apply_verdict(session, "improved", improved_content=resolved_content)
+        applied = mgr.apply_verdict(
+            session, "improved", improved_content=resolved_content
+        )
+        if not applied:
+            return {
+                "status": "no_op",
+                "session_status": session.status,
+                "reason": (
+                    f"session is {session.status}"
+                    if session.status != "active"
+                    else "no current subsection"
+                ),
+                "message": (
+                    f"Cannot improve — session is {session.status}.  "
+                    "Call sbr_resume first."
+                    if session.status == "paused"
+                    else f"Cannot improve — session is {session.status}."
+                ),
+            }
         return {
             "status": "improved",
             "session_status": session.status,
@@ -789,7 +835,23 @@ def _build_server(
         (only used BEFORE first verdict to move the initial cursor).
         """
         session = mgr.load(session_id)
-        mgr.apply_verdict(session, "skipped")
+        applied = mgr.apply_verdict(session, "skipped")
+        if not applied:
+            return {
+                "status": "no_op",
+                "session_status": session.status,
+                "reason": (
+                    f"session is {session.status}"
+                    if session.status != "active"
+                    else "no current subsection"
+                ),
+                "message": (
+                    f"Cannot skip — session is {session.status}.  "
+                    "Call sbr_resume first."
+                    if session.status == "paused"
+                    else f"Cannot skip — session is {session.status}."
+                ),
+            }
         return {"status": "skipped", "session_status": session.status}
 
     @mcp.tool()

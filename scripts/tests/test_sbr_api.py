@@ -114,8 +114,48 @@ class TestSessionManager:
             ),
         ):
             session = mgr.start(100, "owner/repo")
-            mgr.apply_verdict(session, "approved")
+            applied = mgr.apply_verdict(session, "approved")
+        assert applied is True
         assert session.current_subsection_index == 1
+
+    def test_apply_verdict_returns_false_when_paused(self, tmp_path):
+        """Regression — 2026-04-23 UAT bug: sbr_approve after sbr_pause
+        returned status="approved" while silently no-op'ing because
+        get_current_subsection returns None for non-active sessions.
+        apply_verdict must now surface the no-op to the caller so the
+        MCP tool can return status="no_op" instead of lying."""
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(
+                api, "get_issue_body", return_value="#### Business Problem\nx\n"
+            ),
+        ):
+            session = mgr.start(100, "owner/repo")
+            mgr.pause(session)
+            applied = mgr.apply_verdict(session, "approved")
+        assert applied is False
+        # Cursor did NOT advance.
+        assert session.current_subsection_index == 0
+        assert session.status == "paused"
+
+    def test_apply_verdict_returns_false_when_terminated(self, tmp_path):
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(
+                api, "get_issue_body", return_value="#### Business Problem\nx\n"
+            ),
+        ):
+            session = mgr.start(100, "owner/repo")
+            mgr.terminate(session)
+            applied = mgr.apply_verdict(session, "approved")
+        assert applied is False
+        assert session.status == "terminated"
 
     def test_apply_verdict_improved_stores_content(self, tmp_path):
         mgr = api.SessionManager(sessions_dir=tmp_path)
