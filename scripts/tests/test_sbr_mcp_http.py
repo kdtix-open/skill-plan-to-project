@@ -16,6 +16,7 @@ to keep the unit-test loop fast.  This file asserts wiring + routing only.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -161,6 +162,68 @@ class TestBearerTokenVerifier:
 # ---------------------------------------------------------------------------
 # _build_server wiring — token_verifier plumbed when auth_token provided
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    mcp_server.FastMCP is None, reason="mcp SDK not installed in this env"
+)
+class TestSbrStartSessionValidation:
+    """Regression guards for the 2026-04-22 Stage 1.5 first-use miss.
+
+    The voice model called sbr_start_session with repo='kdtix-open' (bare
+    org, no slash).  The server accepted it + silently returned
+    queue_size=0 because the walker couldn't enumerate a nonexistent
+    repo.  Result: operator stuck with a useless session, no clear error.
+
+    These tests lock the new fail-fast + warn-on-empty behavior.
+    """
+
+    def _get_tool_fn(self, server: Any, name: str) -> Any:
+        """Return the raw Python fn registered for a tool name.  FastMCP
+        wraps it in a Tool object but `.fn` is the underlying callable."""
+        tm = getattr(server, "_tool_manager", None)
+        # In this SDK version list_tools() is synchronous; internal
+        # storage is `_tools` dict keyed by name.
+        tools_dict = getattr(tm, "_tools", None)
+        if tools_dict is None:
+            raise AssertionError("_tool_manager._tools not present")
+        tool = tools_dict.get(name)
+        if tool is None:
+            raise AssertionError(f"tool {name} not registered")
+        return tool.fn
+
+    def test_rejects_bare_org_without_slash(self):
+        server = mcp_server._build_server()
+        fn = self._get_tool_fn(server, "sbr_start_session")
+        with pytest.raises(ValueError, match="missing slash separator"):
+            fn(scope_issue_number=182, repo="kdtix-open")
+
+    def test_rejects_repo_with_whitespace(self):
+        """Operator's voice transcription often produces
+        'kdtix-open agent-project-queue' (space instead of slash).
+        Must reject + suggest the slash form."""
+        server = mcp_server._build_server()
+        fn = self._get_tool_fn(server, "sbr_start_session")
+        with pytest.raises(ValueError) as exc_info:
+            fn(
+                scope_issue_number=182,
+                repo="kdtix-open agent-project-queue",
+            )
+        msg = str(exc_info.value)
+        assert "Invalid repo format" in msg
+        # Error message MUST suggest the correct format
+        assert "kdtix-open/agent-project-queue" in msg
+
+    def test_rejects_repo_with_slash_and_whitespace(self):
+        """Edge case: 'kdtix-open /agent' — has slash BUT also space.
+        The whitespace branch of validation must catch this."""
+        server = mcp_server._build_server()
+        fn = self._get_tool_fn(server, "sbr_start_session")
+        with pytest.raises(ValueError, match="contains whitespace"):
+            fn(
+                scope_issue_number=182,
+                repo="kdtix-open /agent-project-queue",
+            )
 
 
 class TestBuildServerAuthWiring:

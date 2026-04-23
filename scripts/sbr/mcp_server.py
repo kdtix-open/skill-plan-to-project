@@ -192,22 +192,84 @@ def _build_server(
 
         Args:
             scope_issue_number: The Project Scope issue number in the repo (e.g. 357).
-            repo: owner/name (e.g. "kdtix-open/agent-project-queue").
+            repo: owner/name (e.g. "kdtix-open/agent-project-queue").  MUST
+                contain a `/` separating org from repo name — bare orgs
+                like "kdtix-open" are rejected.
             skip_issues: Optional list of issue numbers to exclude from review.
 
         Returns:
             {session_id, queue_size, scope_issue_number, repo}
         """
+        tool_log = logging.getLogger("sbr-mcp.sbr_start_session")
+
+        # Validate repo format up-front so operators get a clear error
+        # instead of a silent empty queue (the server would otherwise
+        # walk a nonexistent hierarchy and return queue_size=0).
+        if not isinstance(repo, str) or "/" not in repo or " " in repo:
+            tool_log.warning(
+                "rejected invalid repo format",
+                extra={"repo": repo, "scope": scope_issue_number},
+            )
+            reason = (
+                "missing slash separator"
+                if "/" not in str(repo)
+                else "contains whitespace"
+            )
+            raise ValueError(
+                f"Invalid repo format: {repo!r}.  Expected owner/name "
+                f"(e.g. 'kdtix-open/agent-project-queue').  "
+                f"Received: {repo!r} — {reason}.  "
+                f"If the operator said 'kdtix-open agent-project-queue', "
+                f"the correct repo value is 'kdtix-open/agent-project-queue' "
+                f"(org + slash + repo name)."
+            )
+
+        owner, _, name = repo.partition("/")
+        if not owner or not name:
+            raise ValueError(
+                f"Invalid repo format: {repo!r}.  Both org and repo name "
+                f"required, separated by /.  Received: owner={owner!r}, name={name!r}."
+            )
+
+        tool_log.info(
+            "starting session",
+            extra={
+                "scope_issue_number": scope_issue_number,
+                "repo": repo,
+                "skip_count": len(skip_issues or ()),
+            },
+        )
         session = mgr.start(
             scope_issue_number, repo, skip_issues=set(skip_issues or set())
         )
-        return {
+        queue_size = len(session.issues)
+        tool_log.info(
+            "session started",
+            extra={
+                "session_id": session.session_id,
+                "queue_size": queue_size,
+                "repo": repo,
+            },
+        )
+        result: dict[str, Any] = {
             "session_id": session.session_id,
-            "queue_size": len(session.issues),
+            "queue_size": queue_size,
             "scope_issue_number": session.scope_issue_number,
             "repo": session.repo,
             "status": session.status,
         }
+        # queue_size == 0 is almost always a symptom of a wrong repo OR a
+        # scope issue that has no children yet — surface a warning the
+        # model can narrate to the operator.
+        if queue_size == 0:
+            result["warning"] = (
+                f"Scope #{scope_issue_number} in {repo} has no child issues "
+                f"to review.  Either the scope number is wrong, the repo "
+                f"name is wrong, or the scope genuinely has no children. "
+                f"Ask the operator to verify the scope + repo before "
+                f"continuing."
+            )
+        return result
 
     @mcp.tool()
     def sbr_next_subsection(session_id: str) -> dict[str, Any]:
