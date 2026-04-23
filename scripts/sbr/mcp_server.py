@@ -275,12 +275,11 @@ def _build_server(
                 f"Invalid repo format: {repo!r}.  Expected owner/name "
                 f"(e.g. 'kdtix-open/agent-project-queue').  "
                 f"Received: {repo!r} — {reason}.  "
-                f"Canonical call: sbr_start_session(scope_issue_number=182, "
-                f"repo='kdtix-open/agent-project-queue').  "
-                f"If the operator said 'kdtix-open agent-project-queue' or "
+                f"Retry with repo='kdtix-open/agent-project-queue' "
+                f"(org + slash + repo name, no spaces).  "
+                f"If you heard 'kdtix-open agent-project-queue' or "
                 f"'KD-TX-Open agent-project-queue' (STT variation), "
-                f"normalize to lowercase + slash: "
-                f"'kdtix-open/agent-project-queue'."
+                f"normalize to lowercase + slash."
             )
 
         owner, _, name = repo.partition("/")
