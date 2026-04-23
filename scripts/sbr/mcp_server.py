@@ -38,7 +38,11 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import logging
+import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 try:
@@ -94,6 +98,7 @@ def _build_server(
     auth_token: str | None = None,
     resource_server_url: str = "http://127.0.0.1:3456/",
     allowed_hosts: list[str] | None = None,
+    allowed_origins: list[str] | None = None,
 ) -> FastMCP:  # type: ignore[name-defined]
     """Construct the FastMCP server + register the 11 canonical tools.
 
@@ -109,13 +114,18 @@ def _build_server(
             AuthSettings for OAuth protected-resource metadata.  Defaults
             to localhost for local dev; override to the hosted URL in
             production (e.g. "https://dev.projectit.ai/mcp/sbr/").
-        allowed_hosts: List of Host header values that pass FastMCP's
-            DNS-rebinding protection.  Defaults to
-            ["127.0.0.1:*", "localhost:*"] when unset; override to include
-            public hostnames behind a reverse proxy (e.g.
-            ["dev.projectit.ai", "127.0.0.1:*"]).  Empty list = protection
-            disabled entirely (not recommended).
+        allowed_hosts: Host header values that pass FastMCP's DNS-rebinding
+            protection.  Defaults to ["127.0.0.1:*", "localhost:*"] when
+            unset; override to include public hostnames behind a reverse
+            proxy (e.g. ["dev.projectit.ai", "127.0.0.1:*"]).  Empty list =
+            protection disabled entirely (not recommended).
+        allowed_origins: Origin header values that pass DNS-rebinding
+            protection.  Browsers send `Origin:` on cross-origin (and many
+            same-origin) fetches — FastMCP rejects every Origin when the
+            allowlist is empty, so hosted consumers MUST populate this.
+            Default ["http://127.0.0.1:*", "http://localhost:*"].
     """
+    log = logging.getLogger("sbr-mcp.build_server")
     if FastMCP is None:
         raise RuntimeError(
             "The `mcp` Python SDK is not installed.\n"
@@ -135,23 +145,41 @@ def _build_server(
             resource_server_url=resource_server_url,
             required_scopes=["sbr:review"],
         )
+        log.info(
+            "Bearer auth installed", extra={"resource_server_url": resource_server_url}
+        )
 
     # DNS-rebinding protection — default to loopback+localhost, let callers
     # add public hostnames.  `127.0.0.1:*` matches any port; `localhost:*`
-    # ditto.
+    # ditto.  Browsers send Origin headers with scheme+host (no port for
+    # :80/:443); we include http/https variants.
     effective_hosts = (
         allowed_hosts if allowed_hosts is not None else ["127.0.0.1:*", "localhost:*"]
     )
+    effective_origins = (
+        allowed_origins
+        if allowed_origins is not None
+        else ["http://127.0.0.1:*", "http://localhost:*"]
+    )
     if TransportSecuritySettings is not None:
-        if effective_hosts:
+        if effective_hosts or effective_origins:
             kwargs["transport_security"] = TransportSecuritySettings(
                 enable_dns_rebinding_protection=True,
                 allowed_hosts=effective_hosts,
+                allowed_origins=effective_origins,
+            )
+            log.info(
+                "DNS-rebinding protection ON",
+                extra={
+                    "allowed_hosts": effective_hosts,
+                    "allowed_origins": effective_origins,
+                },
             )
         else:
             kwargs["transport_security"] = TransportSecuritySettings(
                 enable_dns_rebinding_protection=False
             )
+            log.warning("DNS-rebinding protection DISABLED (empty allowlists)")
 
     mcp = FastMCP("sbr", **kwargs)
     mgr = SessionManager()
@@ -372,7 +400,142 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "dev.projectit.ai --allowed-host 127.0.0.1:*"
         ),
     )
+    parser.add_argument(
+        "--allowed-origin",
+        action="append",
+        dest="allowed_origins",
+        default=None,
+        help=(
+            "Allowed Origin header for HTTP/SSE transport (repeatable).  "
+            "Browsers send Origin on fetches; FastMCP rejects every "
+            "non-allowed Origin when the allowlist is non-empty.  Default "
+            "when unset: http://127.0.0.1:* + http://localhost:*.  Add "
+            "your public origin for hosted deployments, e.g. "
+            "--allowed-origin https://dev.projectit.ai"
+        ),
+    )
+    # Observability per .github/docs/standards/observability-and-logging.md.
+    parser.add_argument(
+        "--verbose",
+        type=int,
+        choices=(0, 1, 2, 3),
+        default=None,
+        help=(
+            "Log verbosity: 0=errors only, 1=info (default), 2=debug, "
+            "3=trace (payloads).  Env fallback: VERBOSE.  Writes to "
+            "stderr AND logs/sbr-mcp-server-<YYYY-MM-DD>.log always."
+        ),
+    )
+    parser.add_argument(
+        "--debug",
+        type=int,
+        choices=(0, 1, 2, 3),
+        default=None,
+        help=(
+            "Debug detail level (implies --verbose 2 minimum).  Env "
+            "fallback: DEBUG.  Level 3 emits full HTTP bodies + inter-"
+            "service calls into logs/sbr-mcp-server-trace-<YYYY-MM-DD>.log"
+        ),
+    )
+    parser.add_argument(
+        "--logs-dir",
+        default=None,
+        help=(
+            "Directory for log files.  Defaults to `logs/` under the "
+            "current working directory.  Created automatically at "
+            "startup — UAT never has to create it.  Env fallback: "
+            "SBR_LOGS_DIR."
+        ),
+    )
     return parser
+
+
+# ---------------------------------------------------------------------------
+# Structured logging — .github/docs/standards/observability-and-logging.md
+# ---------------------------------------------------------------------------
+
+TRACE_LEVEL_NUM = 5  # custom level below DEBUG (10)
+logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
+
+
+def _log_trace(self: logging.Logger, message: str, *args: Any, **kwargs: Any) -> None:
+    if self.isEnabledFor(TRACE_LEVEL_NUM):
+        self._log(TRACE_LEVEL_NUM, message, args, **kwargs)  # type: ignore[attr-defined]
+
+
+logging.Logger.trace = _log_trace  # type: ignore[attr-defined]
+
+
+def _log_file_path(
+    logs_dir: Path, service: str = "sbr-mcp-server", suffix: str = ""
+) -> Path:
+    """Return the dated log file path.  Creates logs_dir if missing."""
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    infix = f"-{suffix}" if suffix else ""
+    return logs_dir / f"{service}{infix}-{date_str}.log"
+
+
+def _configure_logging(verbose: int, debug: int, logs_dir: Path) -> None:
+    """Configure root logger per the observability standard.
+
+    - `verbose=0` → errors only (to stderr + file)
+    - `verbose=1` → info (default)
+    - `verbose=2` or `debug>=1` → debug
+    - `verbose=3` or `debug>=3` → trace (full payloads, separate file)
+    """
+    effective = max(verbose, 2 if debug >= 1 else 0, 3 if debug >= 3 else 0)
+    level_map = {
+        0: logging.ERROR,
+        1: logging.INFO,
+        2: logging.DEBUG,
+        3: TRACE_LEVEL_NUM,
+    }
+    log_level = level_map.get(min(effective, 3), logging.INFO)
+
+    fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    root = logging.getLogger()
+    root.setLevel(log_level)
+    # Clear any handlers a parent process installed.
+    root.handlers.clear()
+
+    # Console (stderr) — always on
+    console = logging.StreamHandler(sys.stderr)
+    console.setFormatter(logging.Formatter(fmt))
+    root.addHandler(console)
+
+    # Main log file — always on, standard + info
+    main_path = _log_file_path(logs_dir)
+    main_handler = logging.FileHandler(main_path)
+    main_handler.setFormatter(logging.Formatter(fmt))
+    root.addHandler(main_handler)
+
+    # Debug log file — when --debug >= 1
+    if debug >= 1:
+        debug_path = _log_file_path(logs_dir, suffix="debug")
+        debug_handler = logging.FileHandler(debug_path)
+        debug_handler.setLevel(logging.DEBUG)
+        debug_handler.setFormatter(logging.Formatter(fmt))
+        root.addHandler(debug_handler)
+
+    # Trace log file — when --verbose 3 or --debug 3 (full payloads)
+    if effective >= 3:
+        trace_path = _log_file_path(logs_dir, suffix="trace")
+        trace_handler = logging.FileHandler(trace_path)
+        trace_handler.setLevel(TRACE_LEVEL_NUM)
+        trace_handler.setFormatter(logging.Formatter(fmt))
+        root.addHandler(trace_handler)
+
+    log = logging.getLogger("sbr-mcp")
+    log.info(
+        "Logging configured",
+        extra={
+            "verbose": verbose,
+            "debug": debug,
+            "effective_level": logging.getLevelName(log_level),
+            "main_log": str(main_path),
+        },
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -398,17 +561,44 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # Observability — resolve verbose/debug from CLI flags, env, or defaults.
+    verbose = (
+        args.verbose if args.verbose is not None else int(os.environ.get("VERBOSE", 1))
+    )
+    debug = args.debug if args.debug is not None else int(os.environ.get("DEBUG", 0))
+    logs_dir = (
+        Path(args.logs_dir or os.environ.get("SBR_LOGS_DIR") or "logs")
+        .expanduser()
+        .resolve()
+    )
+    _configure_logging(verbose=verbose, debug=debug, logs_dir=logs_dir)
+    log = logging.getLogger("sbr-mcp.main")
+
+    log.info(
+        "Starting sbr-mcp-server",
+        extra={
+            "transport": args.transport,
+            "host": args.host,
+            "port": args.port,
+            "allowed_hosts": args.allowed_hosts,
+            "allowed_origins": args.allowed_origins,
+        },
+    )
+
     try:
         auth_token = args.auth_token if args.transport != "stdio" else None
         mcp = _build_server(
             auth_token=auth_token,
             allowed_hosts=args.allowed_hosts,
+            allowed_origins=args.allowed_origins,
         )
     except RuntimeError as exc:
+        log.error("build_server failed: %s", exc, exc_info=True)
         print(f"[sbr-mcp-server] {exc}", file=sys.stderr)
         return 2
 
     if args.transport == "stdio":
+        log.info("Running in stdio mode — waiting for Claude App / CLI to connect")
         mcp.run(transport="stdio")
     else:
         # FastMCP reads host/port/mount_path from init kwargs for HTTP modes;
@@ -418,6 +608,10 @@ def main(argv: list[str] | None = None) -> int:
         mcp.settings.port = args.port
         if args.mount_path != "/":
             mcp.settings.mount_path = args.mount_path
+        log.info(
+            "Running HTTP/SSE transport",
+            extra={"bind": f"{args.host}:{args.port}", "mount_path": args.mount_path},
+        )
         mcp.run(transport=args.transport)
     return 0
 
