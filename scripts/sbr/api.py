@@ -239,6 +239,53 @@ class IssueWalker:
 # ---------------------------------------------------------------------------
 
 
+def _extract_raw_section(body: str, key: str) -> str:
+    """Fallback extractor: returns the raw markdown between the heading
+    matching `key` and the next heading (or end of body).  Used when
+    _parse_subsections returns an empty/tiny structured result for
+    subsections that are laid out as markdown tables (MoSCoW, Feature
+    Scope etc.) which the structured parser doesn't fully decode.
+
+    Keeps the literal table text so the voice agent can at least read it
+    aloud instead of receiving a 2-char "{}" string.
+    """
+    # Lazy import so test envs without the create_issues module can
+    # still use SBR's core API (CLI, sessions).
+    try:
+        from scripts.create_issues import SUBSECTION_HEADINGS
+    except ImportError:  # pragma: no cover
+        return ""
+
+    aliases = []
+    for level_dict in SUBSECTION_HEADINGS.values():
+        aliases.extend(level_dict.get(key, []))
+    if not aliases:
+        return ""
+    aliases_lower = [a.lower() for a in aliases]
+
+    lines = body.split("\n")
+    start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Only match markdown headings #### or ### that start a section.
+        if stripped.startswith("#"):
+            heading_text = stripped.lstrip("#").strip().lower()
+            if any(
+                heading_text == a or heading_text.startswith(a) for a in aliases_lower
+            ):
+                start = i + 1
+                break
+    if start is None:
+        return ""
+
+    collected: list[str] = []
+    for line in lines[start:]:
+        if line.strip().startswith("#"):
+            break
+        collected.append(line)
+    return "\n".join(collected).strip()
+
+
 class SubsectionReviewer:
     """Parses an issue body + produces the ordered list of subsections.
 
@@ -255,7 +302,13 @@ class SubsectionReviewer:
     def ordered_subsections(level: str, body: str) -> list[SubsectionReview]:
         """Parse `body` + return a list of SubsectionReview stubs in template
         order.  Each stub's `original_content` is the parsed value for that
-        key (str / list / dict serialized to string for storage)."""
+        key (str / list / dict serialized to string for storage).
+
+        Fallback for structured subsections (e.g. MoSCoW, Feature Scope)
+        whose parse returns a tiny/empty dict: extract the raw markdown
+        between this heading and the next so the voice agent has SOMETHING
+        to read instead of the useless "{}" string.
+        """
         parsed = _parse_subsections(body, level)
         order = _SUBSECTION_ORDER_BY_LEVEL.get(level, [])
         result: list[SubsectionReview] = []
@@ -266,9 +319,21 @@ class SubsectionReviewer:
             elif isinstance(value, str):
                 original = value
             elif isinstance(value, list):
-                original = "\n".join(f"- {v}" for v in value)
+                if value:
+                    original = "\n".join(f"- {v}" for v in value)
+                else:
+                    original = _extract_raw_section(body, key)
             elif isinstance(value, dict):
-                original = json.dumps(value)
+                serialized = json.dumps(value)
+                # If the structured parser came back with nearly-empty
+                # dict (common for MoSCoW tables the parser doesn't
+                # fully understand), fall back to the raw markdown so
+                # the voice agent at least has the literal table.
+                if len(serialized) <= 4 or all(not v for v in value.values()):
+                    raw = _extract_raw_section(body, key)
+                    original = raw if raw else serialized
+                else:
+                    original = serialized
             else:
                 original = str(value)
             result.append(SubsectionReview(key=key, original_content=original))
@@ -421,6 +486,77 @@ class SessionManager:
         # Advance cursor
         session.current_subsection_index += 1
         self._atomic_write(session)
+
+    def go_back(self, session: Session) -> None:
+        """Move cursor back one subsection (across issue boundaries).
+
+        Unlike apply_verdict/advance which walks forward through the
+        queue, go_back lets the operator revisit + amend a subsection
+        they've already verdicted.  The previous subsection's verdict
+        is cleared so the operator can re-approve / re-improve / re-skip
+        without a stuck state.
+        """
+        # Move to previous subsection within the current issue, or to
+        # the last subsection of the previous issue.
+        if session.current_subsection_index > 0:
+            session.current_subsection_index -= 1
+        elif session.current_issue_index > 0:
+            session.current_issue_index -= 1
+            prev_issue = session.issues[session.current_issue_index]
+            # Ensure subsections are populated for the previous issue
+            # so the cursor lands on a real subsection.
+            self._populate_current_issue_subsections(session)
+            session.current_subsection_index = max(0, len(prev_issue.subsections) - 1)
+        else:
+            # Already at the beginning — no-op, but unmark current
+            # just in case the caller expected state mutation.
+            pass
+        # Clear the verdict on the subsection we just moved back to so
+        # the operator can re-verdict.  Keep approved_content in case
+        # they want to reuse it.
+        pair = self.get_current_subsection(session)
+        if pair is not None:
+            _issue, sub = pair
+            sub.verdict = "pending"
+        # If the session was completed, resuming via go_back should
+        # revive it to active.
+        if session.status == "completed":
+            session.status = "active"
+        self._atomic_write(session)
+
+    def goto(
+        self,
+        session: Session,
+        issue_number: int,
+        subsection_key: str | None = None,
+    ) -> bool:
+        """Jump the cursor to a specific issue (and optional subsection).
+
+        Returns True if the target was found + cursor set, False if the
+        issue_number isn't in the session queue.  Clears the verdict
+        on the target subsection for re-verdicting.
+        """
+        for idx, issue in enumerate(session.issues):
+            if issue.number == issue_number:
+                session.current_issue_index = idx
+                self._populate_current_issue_subsections(session)
+                if subsection_key:
+                    for sub_idx, sub in enumerate(issue.subsections):
+                        if sub.key == subsection_key:
+                            session.current_subsection_index = sub_idx
+                            sub.verdict = "pending"
+                            self._atomic_write(session)
+                            return True
+                    # Subsection not found in this issue — fall through
+                    # + land on index 0.
+                session.current_subsection_index = 0
+                if issue.subsections:
+                    issue.subsections[0].verdict = "pending"
+                if session.status == "completed":
+                    session.status = "active"
+                self._atomic_write(session)
+                return True
+        return False
 
     def pause(self, session: Session) -> None:
         session.status = "paused"

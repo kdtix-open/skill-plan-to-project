@@ -193,6 +193,85 @@ class TestSessionManager:
         loaded = mgr.load(session.session_id)
         assert loaded.current_subsection_index == 1
 
+    def test_go_back_decrements_cursor(self, tmp_path):
+        """Regression for 2026-04-23 UAT: operator wanted to revisit
+        a subsection after verdicting but there was no way back."""
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        body = "#### Business Problem\nx\n\n#### Success Criteria\n- A\n"
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(api, "get_issue_body", return_value=body),
+        ):
+            session = mgr.start(100, "owner/repo")
+            mgr.apply_verdict(session, "approved")
+            idx_before = session.current_subsection_index
+            assert idx_before > 0
+            mgr.go_back(session)
+            assert session.current_subsection_index == idx_before - 1
+
+    def test_goto_jumps_to_specified_issue(self, tmp_path):
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(api, "get_issue_body", return_value="x"),
+        ):
+            session = mgr.start(100, "owner/repo")
+            assert mgr.goto(session, issue_number=101) is True
+            assert session.issues[session.current_issue_index].number == 101
+
+    def test_goto_returns_false_for_unknown_issue(self, tmp_path):
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(api, "get_issue_body", return_value=""),
+        ):
+            session = mgr.start(100, "owner/repo")
+            assert mgr.goto(session, issue_number=9999) is False
+
+
+# ---------------------------------------------------------------------------
+# SubsectionReviewer table-fallback — fixes MoSCoW empty-dict bug
+# ---------------------------------------------------------------------------
+
+
+class TestSubsectionTableFallback:
+    def test_empty_moscow_dict_falls_back_to_raw_markdown(self):
+        """Regression for 2026-04-23 UAT: MoSCoW section came back as
+        '{}' (2 chars) because the structured parser couldn't decode
+        the markdown table.  Now falls back to raw text."""
+        body = (
+            "#### MoSCoW Classification\n"
+            "| Priority | Item |\n"
+            "|---|---|\n"
+            "| Must Have | A |\n"
+            "| Must Have | B |\n"
+            "| Should Have | C |\n\n"
+            "#### Done When\nx\n"
+        )
+        subs = api.SubsectionReviewer.ordered_subsections("scope", body)
+        moscow = next((s for s in subs if s.key == "moscow"), None)
+        assert moscow is not None
+        # If the structured parse was empty, the fallback should return
+        # the raw markdown table text (much longer than "{}").
+        if moscow.original_content in ("{}", "[]"):
+            raise AssertionError(
+                f"MoSCoW fell through to useless content: {moscow.original_content!r}"
+            )
+        assert (
+            len(moscow.original_content) > 10
+        ), f"MoSCoW content too short: {moscow.original_content!r}"
+        # Raw markdown should still be recognizable
+        assert (
+            "Must Have" in moscow.original_content
+            or "must" in moscow.original_content.lower()
+        )
+
 
 # ---------------------------------------------------------------------------
 # LLMPromptBuilder — prompt scaffolding

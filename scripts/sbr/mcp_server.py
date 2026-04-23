@@ -496,6 +496,75 @@ def _build_server(
         return {"status": "skipped", "session_status": session.status}
 
     @mcp.tool()
+    def sbr_previous(session_id: str) -> dict[str, Any]:
+        """Move cursor back one subsection and clear its verdict.
+
+        Use when the operator says "go back", "previous", "last
+        section", "let me redo that".  Crosses issue boundaries.  The
+        previous subsection's verdict is cleared so the operator can
+        re-approve/re-improve/re-skip cleanly.
+        """
+        session = mgr.load(session_id)
+        mgr.go_back(session)
+        pair = mgr.get_current_subsection(session)
+        if pair is None:
+            return {
+                "status": "at_beginning",
+                "session_status": session.status,
+            }
+        issue, sub = pair
+        return {
+            "status": "moved_back",
+            "session_status": session.status,
+            "issue_number": issue.number,
+            "issue_title": issue.title,
+            "issue_level": issue.level,
+            "subsection_key": sub.key,
+        }
+
+    @mcp.tool()
+    def sbr_goto(
+        session_id: str,
+        issue_number: int,
+        subsection_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Jump the cursor to a specific issue (and optional subsection).
+
+        Use when the operator says "jump to issue 200", "go to the done
+        when section on issue 183", etc.  Clears the verdict on the
+        target subsection so it can be re-verdicted.
+        """
+        session = mgr.load(session_id)
+        found = mgr.goto(
+            session,
+            issue_number=issue_number,
+            subsection_key=subsection_key,
+        )
+        if not found:
+            return {
+                "status": "not_found",
+                "issue_number": issue_number,
+                "session_status": session.status,
+                "message": (
+                    f"Issue #{issue_number} is not in this session's queue.  "
+                    f"Check the scope number + sbr_session_status for the "
+                    f"queue listing."
+                ),
+            }
+        pair = mgr.get_current_subsection(session)
+        if pair is None:
+            return {"status": "moved", "session_status": session.status}
+        issue, sub = pair
+        return {
+            "status": "moved",
+            "session_status": session.status,
+            "issue_number": issue.number,
+            "issue_title": issue.title,
+            "issue_level": issue.level,
+            "subsection_key": sub.key,
+        }
+
+    @mcp.tool()
     def sbr_pause(session_id: str) -> dict[str, Any]:
         """Pause the session (preserves cursor for resume)."""
         session = mgr.load(session_id)
