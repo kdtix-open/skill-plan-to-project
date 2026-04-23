@@ -186,21 +186,75 @@ def _build_server(
 
     @mcp.tool()
     def sbr_start_session(
-        scope_issue_number: int, repo: str, skip_issues: list[int] | None = None
+        scope_issue_number: int | None = None,
+        repo: str | None = None,
+        skip_issues: list[int] | None = None,
+        # --- Aliases for voice-agent flexibility ------------------------
+        # The voice model often picks natural-sounding names.  Accept the
+        # variants observed in production + normalize to the canonical
+        # fields below.  Docstring warns the model NOT to use these, but
+        # if it does, we find the intent instead of hard-failing.
+        scope_id: int | None = None,
+        scope: int | None = None,
+        issue_number: int | None = None,
+        item_id: int | None = None,
+        organization: str | None = None,
+        organisation: str | None = None,  # British spelling
+        org: str | None = None,
+        repository: str | None = None,
+        repo_name: str | None = None,
+        queue_name: str | None = None,
+        project_queue: str | None = None,
+        project_queue_name: str | None = None,
     ) -> dict[str, Any]:
         """Start a new Sprint Backlog Review session rooted at a Project Scope issue.
 
-        Args:
-            scope_issue_number: The Project Scope issue number in the repo (e.g. 357).
-            repo: owner/name (e.g. "kdtix-open/agent-project-queue").  MUST
-                contain a `/` separating org from repo name — bare orgs
-                like "kdtix-open" are rejected.
-            skip_issues: Optional list of issue numbers to exclude from review.
+        CANONICAL args (use these — do NOT use aliases):
+            scope_issue_number: The Project Scope issue number (e.g. 182).
+            repo: owner/name in GitHub's format (e.g. "kdtix-open/agent-project-queue").
+
+        Aliases accepted for voice-agent flexibility — the model should
+        still prefer the canonical names above, but these variants are
+        tolerated so one slip doesn't kill the session:
+            scope_id, scope, issue_number, item_id → scope_issue_number
+            organization + repository, org + repo_name → joined as owner/name
+            queue_name, project_queue(_name) → repo (if already in owner/name form)
+
+        PHONETIC variations the voice STT sometimes produces:
+            "KD-TX-Open", "KDTIX OPEN", "KAYDEETIX-OPEN" → kdtix-open
+            Always lowercase + hyphenate.
 
         Returns:
-            {session_id, queue_size, scope_issue_number, repo}
+            {session_id, queue_size, scope_issue_number, repo,
+             warning?: str if queue is empty}
         """
         tool_log = logging.getLogger("sbr-mcp.sbr_start_session")
+
+        # Normalize scope_issue_number aliases — pick the first non-None.
+        scope_issue_number = (
+            scope_issue_number or scope_id or scope or issue_number or item_id
+        )
+        if scope_issue_number is None:
+            raise ValueError(
+                "scope_issue_number is required — the GitHub issue number "
+                "of the Project Scope to review (e.g. 182).  Pass as "
+                "`scope_issue_number=182`.  "
+                "Also accepted (will be normalized): scope_id, scope, "
+                "issue_number, item_id."
+            )
+
+        # Normalize repo aliases.
+        if not repo:
+            org_value = organization or organisation or org
+            repo_part = repository or repo_name
+            if org_value and repo_part:
+                repo = f"{org_value}/{repo_part}"
+                tool_log.info(
+                    "normalized split organization+repository to repo",
+                    extra={"repo": repo},
+                )
+            else:
+                repo = queue_name or project_queue or project_queue_name
 
         # Validate repo format up-front so operators get a clear error
         # instead of a silent empty queue (the server would otherwise
@@ -212,16 +266,21 @@ def _build_server(
             )
             reason = (
                 "missing slash separator"
-                if "/" not in str(repo)
+                if repo and "/" not in str(repo)
                 else "contains whitespace"
+                if repo
+                else "repo argument is missing entirely"
             )
             raise ValueError(
                 f"Invalid repo format: {repo!r}.  Expected owner/name "
                 f"(e.g. 'kdtix-open/agent-project-queue').  "
                 f"Received: {repo!r} — {reason}.  "
-                f"If the operator said 'kdtix-open agent-project-queue', "
-                f"the correct repo value is 'kdtix-open/agent-project-queue' "
-                f"(org + slash + repo name)."
+                f"Canonical call: sbr_start_session(scope_issue_number=182, "
+                f"repo='kdtix-open/agent-project-queue').  "
+                f"If the operator said 'kdtix-open agent-project-queue' or "
+                f"'KD-TX-Open agent-project-queue' (STT variation), "
+                f"normalize to lowercase + slash: "
+                f"'kdtix-open/agent-project-queue'."
             )
 
         owner, _, name = repo.partition("/")
@@ -328,14 +387,58 @@ def _build_server(
         return {"status": "approved", "session_status": session.status}
 
     @mcp.tool()
-    def sbr_improve(session_id: str, new_content: str) -> dict[str, Any]:
-        """Replace the current subsection with improved content + advance."""
+    def sbr_improve(
+        session_id: str,
+        new_content: str | None = None,
+        # Aliases the voice model commonly produces instead of new_content.
+        # See ARGUMENT NAMING cheatsheet in the system prompt.
+        suggestion: str | None = None,
+        suggested_content: str | None = None,
+        new_text: str | None = None,
+        content: str | None = None,
+        improvement: str | None = None,
+        text: str | None = None,
+        body: str | None = None,
+        prose: str | None = None,
+        replacement: str | None = None,
+        updated_content: str | None = None,
+    ) -> dict[str, Any]:
+        """Replace the current subsection with improved content + advance.
+
+        CANONICAL signature:
+            sbr_improve(session_id: str, new_content: str)
+
+        Aliases accepted (normalized to new_content):
+            suggestion, suggested_content, new_text, content, improvement,
+            text, body, prose, replacement, updated_content
+        """
+        resolved_content = (
+            new_content
+            or suggestion
+            or suggested_content
+            or new_text
+            or content
+            or improvement
+            or text
+            or body
+            or prose
+            or replacement
+            or updated_content
+        )
+        if not resolved_content:
+            raise ValueError(
+                "sbr_improve requires the replacement prose.  Pass it as "
+                "new_content (e.g. sbr_improve(session_id='abc', "
+                "new_content='...')).  Aliases also accepted: suggestion, "
+                "suggested_content, new_text, content, improvement, text, "
+                "body, prose, replacement, updated_content."
+            )
         session = mgr.load(session_id)
-        mgr.apply_verdict(session, "improved", improved_content=new_content)
+        mgr.apply_verdict(session, "improved", improved_content=resolved_content)
         return {
             "status": "improved",
             "session_status": session.status,
-            "content_length": len(new_content),
+            "content_length": len(resolved_content),
         }
 
     @mcp.tool()
