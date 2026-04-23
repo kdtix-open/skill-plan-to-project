@@ -728,7 +728,17 @@ def _build_server(
 
     @mcp.tool()
     def sbr_approve(session_id: str) -> dict[str, Any]:
-        """Approve the current subsection as-is + advance."""
+        """Approve the current subsection as-is + advance to the next.
+
+        Use when the operator says: "approve", "looks good", "accept",
+        "OK", "yes", "LGTM", or any affirmative verdict.  Records
+        verdict=approved in the session + stores the original content
+        as approved_content (so write-back commits the unchanged
+        version).  Cursor advances one subsection.
+
+        Remember: changes are STAGED in the session, not written to
+        GitHub until sbr_write_back is called at the end.
+        """
         session = mgr.load(session_id)
         mgr.apply_verdict(session, "approved")
         return {"status": "approved", "session_status": session.status}
@@ -790,7 +800,15 @@ def _build_server(
 
     @mcp.tool()
     def sbr_skip(session_id: str) -> dict[str, Any]:
-        """Skip the current subsection (leave as-is) + advance."""
+        """Skip the current subsection (leave unchanged) + advance to the next.
+
+        Use when the operator says: "skip", "leave it", "pass", "not
+        now", "ignore this one".  Records verdict=skipped — the
+        subsection is NOT included in write-back.  Cursor advances.
+
+        Distinct from sbr_approve (approves as-is) and sbr_next_subsection
+        (only used BEFORE first verdict to move the initial cursor).
+        """
         session = mgr.load(session_id)
         mgr.apply_verdict(session, "skipped")
         return {"status": "skipped", "session_status": session.status}
@@ -866,28 +884,61 @@ def _build_server(
 
     @mcp.tool()
     def sbr_pause(session_id: str) -> dict[str, Any]:
-        """Pause the session (preserves cursor for resume)."""
+        """Pause the session — halt narration + freeze cursor for resume.
+
+        Use when the operator says: "pause", "hold on", "wait",
+        "take a break", "freeze it", "stop listening for a moment".
+        Session status transitions to 'paused'; voice agent should stop
+        soliciting verdicts until sbr_resume is called.  Cursor position
+        + all staged verdicts are preserved.  Tokens + MCP session stay
+        live.
+        """
         session = mgr.load(session_id)
         mgr.pause(session)
         return {"status": "paused", "session_status": session.status}
 
     @mcp.tool()
     def sbr_resume(session_id: str) -> dict[str, Any]:
-        """Resume a paused session."""
+        """Resume a paused session — reactivate narration + continue review.
+
+        Use when the operator says: "resume", "continue", "pick up",
+        "keep going", "I'm back", "let's continue".  Session status
+        transitions from 'paused' back to 'active'.  Cursor stays where
+        sbr_pause left it; voice agent should re-orient the operator
+        by summarizing the current subsection before soliciting a verdict.
+        """
         session = mgr.load(session_id)
         mgr.resume_session(session)
         return {"status": "active", "session_status": session.status}
 
     @mcp.tool()
     def sbr_terminate(session_id: str) -> dict[str, Any]:
-        """Terminate a session without write-back (discards verdicts)."""
+        """Terminate a session — end immediately WITHOUT writing back.
+
+        Use when the operator says: "terminate", "abandon", "cancel",
+        "end without saving", "discard", "throw it all away".
+
+        WARNING: all staged approvals/improvements are DISCARDED.
+        GitHub issue bodies remain unchanged.  If the operator has
+        staged changes and just wants to stop temporarily, prefer
+        sbr_pause (keeps state) OR sbr_write_back (commits then ends).
+        Confirm with the operator before terminating if any content has
+        been improved this session.
+        """
         session = mgr.load(session_id)
         mgr.terminate(session)
         return {"status": "terminated", "session_status": session.status}
 
     @mcp.tool()
     def sbr_session_status(session_id: str) -> dict[str, Any]:
-        """Return the session's current progress snapshot."""
+        """Report session progress — counts + cursor position + status.
+
+        Use when the operator says: "status", "how am I doing",
+        "progress", "where are we", "summary so far", "how much left".
+        Returns total issues, current position in queue, counts of
+        approved / improved / skipped, and session.status (active /
+        paused / completed / terminated).  Read-only — no state change.
+        """
         session = mgr.load(session_id)
         approved = sum(i.approved_count for i in session.issues)
         improved = sum(i.improved_count for i in session.issues)
@@ -904,7 +955,24 @@ def _build_server(
 
     @mcp.tool()
     def sbr_write_back(session_id: str) -> dict[str, Any]:
-        """Commit approved verdicts for all completed issues in the session."""
+        """Commit all staged approvals/improvements to GitHub issue bodies.
+
+        Use when the operator says: "write back", "commit", "save to
+        GitHub", "apply", "ship it", "persist", "push the changes",
+        "I'm done — save everything".
+
+        For each completed issue (all subsections have a verdict), the
+        approved_content is merged back into the GitHub issue body +
+        committed via `gh issue edit`.  Preserves operator text outside
+        the template zone.
+
+        Returns write_back_count (issues updated) + results (per-issue
+        diff summary).  Safe to call multiple times — issues already
+        written back are skipped on subsequent calls.
+
+        This is the ONLY tool that mutates GitHub.  sbr_approve,
+        sbr_improve, sbr_skip all stage to the local session only.
+        """
         session = mgr.load(session_id)
         results: list[dict[str, Any]] = []
         for issue in session.issues:
