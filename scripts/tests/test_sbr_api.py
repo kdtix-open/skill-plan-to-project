@@ -649,3 +649,102 @@ class TestWriteBacker:
         session.issues = [issue]
         with pytest.raises(ValueError, match="no write-back history"):
             api.WriteBacker.rollback_write_back(session, issue)
+
+    def test_write_back_strips_voice_echoed_terminator(self, tmp_path):
+        """Regression — 2026-04-23 issue #182 morning session: the model
+        echoed the section separator `---` at the end of its improved
+        content.  WriteBacker re-added its own terminator + produced a
+        duplicate `---\\n\\n---\\n` cluster that the operator noticed
+        visually in the GitHub rendering.  Fix strips trailing
+        terminators from new content before re-inserting its own."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s7",
+            scope_issue_number=700,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(
+            number=701,
+            title="Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="improved",
+                    original_content="old",
+                    # Voice-echoed terminator — THE bug-producing pattern.
+                    approved_content=(
+                        "New vision prose that reads the operator's "
+                        "approved content aloud.\n\n---"
+                    ),
+                ),
+            ],
+        )
+        session.issues = [issue]
+        before = (
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n"
+            "## Vision\n\nold\n\n---\n"
+        )
+        captured = {}
+        with (
+            patch.object(api, "get_issue_body", return_value=before),
+            patch.object(
+                api,
+                "update_issue_body",
+                side_effect=lambda r, n, b: captured.update(body=b),
+            ),
+        ):
+            api.WriteBacker.write_back_issue(session, issue)
+
+        written = captured["body"]
+        import re
+
+        # No double-`---` in the output.
+        double_hr = re.findall(r"\n---\s*\n\s*\n---\s*\n", written)
+        assert (
+            double_hr == []
+        ), f"expected zero double-hr clusters, got {len(double_hr)}: {written!r}"
+        # The improved content still reached the body.
+        assert "New vision prose" in written
+
+    def test_strip_helper_removes_stacked_terminators(self):
+        """The helper must strip multiple stacked `---` terminators, not
+        just one.  Voice content has been observed with `content\\n\\n
+        ---\\n\\n---` patterns."""
+        from scripts.sbr.api import _strip_trailing_section_terminator as strip_fn
+
+        assert strip_fn("body\n\n---") == "body"
+        assert strip_fn("body\n\n---\n\n---") == "body"
+        assert strip_fn("body\n\n---\n---\n---") == "body"
+        # Doesn't touch content without trailing terminator.
+        assert strip_fn("body without terminator") == "body without terminator"
+        # Doesn't touch `---` mid-content (only trailing).
+        assert strip_fn("body\n---\nmore body") == "body\n---\nmore body"
+
+    def test_apply_verdict_improved_strips_trailing_terminator(self, tmp_path):
+        """apply_verdict must clean voice-echoed terminators BEFORE
+        storing, so the session JSON stays tidy even if WriteBacker's
+        defense is ever bypassed."""
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        stub = [
+            {
+                "number": 100,
+                "title": "Project Scope: Test",
+                "level": "scope",
+                "parent_number": None,
+            }
+        ]
+        with (
+            patch.object(api, "_walk_existing_hierarchy", return_value=stub),
+            patch.object(
+                api, "get_issue_body", return_value="#### Business Problem\nx\n"
+            ),
+        ):
+            session = mgr.start(100, "owner/repo")
+            # Voice-echoed terminator on improved content:
+            mgr.apply_verdict(session, "improved", improved_content="clean body\n\n---")
+        sub = session.issues[0].subsections[0]
+        assert sub.verdict == "improved"
+        assert sub.approved_content == "clean body"  # terminator stripped

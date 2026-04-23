@@ -111,6 +111,30 @@ _SUBSECTION_ORDER_BY_LEVEL: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 
 
+# Regex used by both apply_verdict's content-clean step and
+# WriteBacker._replace_section_in_body to strip voice-echoed section
+# terminators.  Matches a trailing `---` plus any preceding blank
+# lines, so we can repeatedly call it to clean multiply-stacked
+# terminators.
+_TRAILING_SECTION_TERMINATOR_RE = _re.compile(r"(?:\n\s*)*---\s*$")
+
+
+def _strip_trailing_section_terminator(content: str) -> str:
+    """Remove trailing `\\n---` separator(s) from voice-echoed content.
+
+    Voice agents occasionally include the section separator when
+    dictating back the proposed improvement, which produces duplicate
+    horizontal rules when WriteBacker re-inserts its own terminator.
+    Strip conservatively: only drops trailing `---` patterns, never
+    touches body content.  Called from SessionManager.apply_verdict and
+    from WriteBacker (belt + suspenders).
+    """
+    stripped = content.rstrip()
+    while _TRAILING_SECTION_TERMINATOR_RE.search(stripped):
+        stripped = _TRAILING_SECTION_TERMINATOR_RE.sub("", stripped).rstrip()
+    return stripped
+
+
 @dataclasses.dataclass
 class SubsectionReview:
     """One subsection under review.  Stored per-issue in session state."""
@@ -526,7 +550,12 @@ class SessionManager:
         _issue, sub = pair
         sub.verdict = verdict
         if verdict == "improved" and improved_content is not None:
-            sub.approved_content = improved_content
+            # Defense — strip any trailing `---` terminators the voice
+            # agent may have echoed back with the improved content.
+            # Without this, WriteBacker produces duplicate horizontal
+            # rules (see 2026-04-23 issue #182 morning session which
+            # seeded the bug that surfaced in afternoon write-back).
+            sub.approved_content = _strip_trailing_section_terminator(improved_content)
         elif verdict == "approved":
             sub.approved_content = sub.original_content
         # Advance cursor
@@ -763,10 +792,13 @@ def _replace_section_in_body(
     # but keep the header + the terminator (if any).
     before = body[:start]
     after = body[start + terminator_end :]
-    # Normalize the new content: trim leading/trailing blank lines so we
-    # get consistent `\n\n<content>\n\n` framing.  strip("\n") also strips
-    # any trailing spaces we don't want leaking into the body.
-    new_body_section = new_content.strip()
+    # Normalize: trim leading/trailing blank lines + strip any trailing
+    # `---` the voice agent echoed back with the improved content.
+    # Without the terminator-strip, re-adding our own terminator
+    # produces duplicate `---` separators (2026-04-23 issue #182
+    # morning session bug — fixed at both apply_verdict-time AND
+    # write-back-time for defense in depth).
+    new_body_section = _strip_trailing_section_terminator(new_content)
     terminator_text = after_header[terminator_start:terminator_end]
     # Reassemble.  `before` ends with the header line (no trailing \n
     # because the regex anchors $ before the newline).  terminator_text
