@@ -247,14 +247,41 @@ def _build_server(
         if not repo:
             org_value = organization or organisation or org
             repo_part = repository or repo_name
-            if org_value and repo_part:
+            # Case A: split org + short repo name → join with slash.
+            if org_value and repo_part and "/" not in repo_part:
                 repo = f"{org_value}/{repo_part}"
                 tool_log.info(
                     "normalized split organization+repository to repo",
                     extra={"repo": repo},
                 )
+            # Case B: the "repository" arg already contains a slash
+            # (full owner/name form) → accept as-is.  This was a bug
+            # discovered during 2026-04-23 UAT: model passed
+            # repository="kdtix-open/agent-project-queue" with no
+            # organization, and the code fell through to the queue_name
+            # branch + left repo=None.
+            elif repo_part and "/" in repo_part:
+                repo = repo_part
+                tool_log.info(
+                    "accepting repository arg as already-slashed repo",
+                    extra={"repo": repo},
+                )
             else:
                 repo = queue_name or project_queue or project_queue_name
+
+        # STT often produces caps-y variants ("KDTIX-open/Agent-Project-QUE")
+        # because it treats the hyphenated word as an abbreviation.  The
+        # GitHub-canonical form is lowercase.  Lowercase defensively —
+        # GitHub is case-insensitive on repo names anyway, but the
+        # capitalization difference can trip up cached lookups.
+        if repo and isinstance(repo, str):
+            lower = repo.lower()
+            if lower != repo:
+                tool_log.info(
+                    "normalized STT caps in repo",
+                    extra={"before": repo, "after": lower},
+                )
+                repo = lower
 
         # Validate repo format up-front so operators get a clear error
         # instead of a silent empty queue (the server would otherwise
@@ -572,6 +599,44 @@ def _build_server(
     # with the model calling start_sbr_review because that matches the
     # operator's spoken phrase "start SBR review".
     # -----------------------------------------------------------------
+
+    @mcp.tool()
+    def sbr_review(
+        scope_issue_number: int | None = None,
+        repo: str | None = None,
+        skip_issues: list[int] | None = None,
+        scope_id: int | None = None,
+        scope: int | None = None,
+        issue_number: int | None = None,
+        item_id: int | None = None,
+        organization: str | None = None,
+        organisation: str | None = None,
+        org: str | None = None,
+        repository: str | None = None,
+        repo_name: str | None = None,
+        queue_name: str | None = None,
+        project_queue: str | None = None,
+        project_queue_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Alias for sbr_start_session — matches the 2nd-try hallucination
+        'sbr_review' seen in 2026-04-23 UAT.  Same args, same behavior."""
+        return sbr_start_session(
+            scope_issue_number=scope_issue_number,
+            repo=repo,
+            skip_issues=skip_issues,
+            scope_id=scope_id,
+            scope=scope,
+            issue_number=issue_number,
+            item_id=item_id,
+            organization=organization,
+            organisation=organisation,
+            org=org,
+            repository=repository,
+            repo_name=repo_name,
+            queue_name=queue_name,
+            project_queue=project_queue,
+            project_queue_name=project_queue_name,
+        )
 
     @mcp.tool()
     def start_sbr_review(
