@@ -330,6 +330,54 @@ def _build_server(
             )
         return result
 
+    # -----------------------------------------------------------------
+    # Aliases for common voice-model hallucinations — delegate to the
+    # canonical tool above.  Registering them as real tools (instead of
+    # fighting via system prompt alone) lets the model use its natural
+    # phrasing without a failure round-trip.  Every UAT run has started
+    # with the model calling start_sbr_review because that matches the
+    # operator's spoken phrase "start SBR review".
+    # -----------------------------------------------------------------
+
+    @mcp.tool()
+    def start_sbr_review(
+        scope_issue_number: int | None = None,
+        repo: str | None = None,
+        skip_issues: list[int] | None = None,
+        scope_id: int | None = None,
+        scope: int | None = None,
+        issue_number: int | None = None,
+        item_id: int | None = None,
+        organization: str | None = None,
+        organisation: str | None = None,
+        org: str | None = None,
+        repository: str | None = None,
+        repo_name: str | None = None,
+        queue_name: str | None = None,
+        project_queue: str | None = None,
+        project_queue_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Alias for sbr_start_session — matches the operator's natural
+        phrase "start SBR review".  Same args, same behavior.  The
+        voice agent often prefers this name; both are supported."""
+        return sbr_start_session(
+            scope_issue_number=scope_issue_number,
+            repo=repo,
+            skip_issues=skip_issues,
+            scope_id=scope_id,
+            scope=scope,
+            issue_number=issue_number,
+            item_id=item_id,
+            organization=organization,
+            organisation=organisation,
+            org=org,
+            repository=repository,
+            repo_name=repo_name,
+            queue_name=queue_name,
+            project_queue=project_queue,
+            project_queue_name=project_queue_name,
+        )
+
     @mcp.tool()
     def sbr_next_subsection(session_id: str) -> dict[str, Any]:
         """Advance to the next pending subsection in the session.
