@@ -289,6 +289,50 @@ def _build_server(
                 f"required, separated by /.  Received: owner={owner!r}, name={name!r}."
             )
 
+        # Automatic preflight — fail loud on expired tokens instead of
+        # silently returning queue_size=0.  Operator's Stage 1.5 UAT
+        # showed "No children found under scope #182" when the token
+        # was actually just expired; we now surface that as a hard error
+        # with remediation text the voice agent can narrate.
+        import shutil
+        import subprocess
+
+        if shutil.which("gh"):
+            try:
+                probe = subprocess.run(
+                    ["gh", "api", f"repos/{repo}", "--jq", ".full_name"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if probe.returncode != 0:
+                    err = probe.stderr.strip()
+                    if "bad credentials" in err.lower():
+                        raise ValueError(
+                            f"Preflight FAILED: GitHub App installation token "
+                            f"is expired (caps at 60 min).  Restart the sbr-mcp "
+                            f"container to pick up the rotated token from "
+                            f".env.sbr, OR run "
+                            f"scripts/hosted-sbr/refresh-sbr-token.sh.  "
+                            f"Raw gh error: {err[:200]}"
+                        )
+                    if "not found" in err.lower() or probe.returncode == 1:
+                        raise ValueError(
+                            f"Preflight FAILED: cannot read {repo!r}.  "
+                            f"Either the repo doesn't exist under that owner, "
+                            f"or the GitHub App isn't installed on it.  "
+                            f"Raw gh error: {err[:200]}"
+                        )
+                    raise ValueError(
+                        f"Preflight FAILED: unexpected gh error on "
+                        f"{repo!r}.  {err[:200]}"
+                    )
+            except subprocess.TimeoutExpired:
+                tool_log.warning(
+                    "preflight probe timed out — proceeding anyway",
+                    extra={"repo": repo},
+                )
+
         tool_log.info(
             "starting session",
             extra={
@@ -328,6 +372,197 @@ def _build_server(
                 f"continuing."
             )
         return result
+
+    @mcp.tool()
+    def sbr_preflight(repo: str | None = None) -> dict[str, Any]:
+        """Diagnose service health BEFORE starting a review session.
+
+        Runs a small suite of connectivity checks + returns a dict the
+        voice agent can narrate to the operator.  Covers:
+          - GitHub App installation token validity (gh api)
+          - gh CLI presence + basic auth
+          - (optional) Read access to the target repo if `repo` is passed
+          - Timestamp of the last token rotation
+
+        Use BEFORE sbr_start_session if the operator says "can we begin",
+        "are we ready", "is everything working", etc.  Also called
+        automatically inside sbr_start_session — a failing preflight
+        aborts the session start with a helpful ValueError.
+
+        Args:
+            repo: Optional "owner/name" to probe for read access.
+
+        Returns:
+            dict with keys:
+              ok                (bool)        — all checks passed
+              checks            (list[dict])  — per-check results
+              remediation       (str | None)  — one-line fix if ok=False
+              suggested_args    (dict | None) — hint for sbr_start_session
+        """
+        import shutil
+        import subprocess
+        import time
+
+        tool_log = logging.getLogger("sbr-mcp.sbr_preflight")
+        checks: list[dict[str, Any]] = []
+        ok = True
+        remediation: str | None = None
+
+        # 1. gh CLI present?
+        gh_path = shutil.which("gh")
+        checks.append(
+            {
+                "name": "gh_cli_installed",
+                "ok": bool(gh_path),
+                "detail": gh_path or "gh not on PATH",
+            }
+        )
+        if not gh_path:
+            ok = False
+            remediation = (
+                "gh CLI is missing from the server image — "
+                "operator should check the sbr-mcp Dockerfile."
+            )
+
+        # 2. gh can authenticate with the env GH_TOKEN?
+        gh_auth_ok = False
+        gh_auth_detail = ""
+        if gh_path:
+            try:
+                r = subprocess.run(
+                    ["gh", "api", "repos/octocat/hello-world", "--jq", ".id"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                gh_auth_ok = r.returncode == 0 and r.stdout.strip().isdigit()
+                gh_auth_detail = (
+                    r.stdout.strip()
+                    if gh_auth_ok
+                    else (r.stderr.strip() or "no stderr")
+                )
+            except subprocess.TimeoutExpired:
+                gh_auth_detail = "gh api timed out after 5s"
+            except OSError as exc:
+                gh_auth_detail = f"{type(exc).__name__}: {exc}"
+        checks.append(
+            {
+                "name": "gh_token_valid",
+                "ok": gh_auth_ok,
+                "detail": gh_auth_detail[:200] if gh_auth_detail else "",
+            }
+        )
+        if gh_path and not gh_auth_ok:
+            ok = False
+            if "bad credentials" in gh_auth_detail.lower():
+                remediation = (
+                    "GitHub App installation token is expired (GitHub caps "
+                    "at 60 min).  Restart the sbr-mcp container to pick up "
+                    "the rotated token from .env.sbr, OR wait for the "
+                    "health-probe-daemon's 45-min auto-refresh."
+                )
+            else:
+                remediation = (
+                    "gh api probe failed.  Check GH_TOKEN env in the "
+                    "sbr-mcp container (should match SBR_AUTH_TOKEN); "
+                    "gh auth status for additional detail."
+                )
+
+        # 3. Optional: target repo readable?
+        target_repo_ok: bool | None = None
+        target_repo_detail = ""
+        if repo and gh_auth_ok:
+            if "/" not in repo:
+                target_repo_ok = False
+                target_repo_detail = "repo missing slash separator"
+            else:
+                try:
+                    r = subprocess.run(
+                        ["gh", "api", f"repos/{repo}", "--jq", ".full_name"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    target_repo_ok = r.returncode == 0 and "/" in r.stdout
+                    target_repo_detail = (
+                        r.stdout.strip()
+                        if target_repo_ok
+                        else (r.stderr.strip() or "repo not accessible")
+                    )
+                except (subprocess.TimeoutExpired, OSError) as exc:
+                    target_repo_ok = False
+                    target_repo_detail = f"{type(exc).__name__}: {exc}"
+            checks.append(
+                {
+                    "name": "target_repo_readable",
+                    "ok": target_repo_ok,
+                    "detail": target_repo_detail[:200],
+                }
+            )
+            if not target_repo_ok:
+                ok = False
+                remediation = remediation or (
+                    f"Cannot read {repo!r} with current token.  Verify the "
+                    f"App is installed on the repo + the token scope "
+                    f"includes it."
+                )
+
+        # 4. Token freshness — container doesn't see host .env.sbr; the
+        # best signal is the container's own process-start time, which
+        # aligns with when env_file was last read (on container restart).
+        token_age_sec: int | None = None
+        try:
+            with open("/proc/1/stat") as f:
+                stat_parts = f.read().split()
+            # /proc/1/stat field 22 = starttime in clock ticks since boot
+            ticks = int(stat_parts[21])
+            clk = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+            with open("/proc/uptime") as f:
+                boot_up = float(f.read().split()[0])
+            boot_epoch = time.time() - boot_up
+            start_epoch = boot_epoch + (ticks / clk)
+            token_age_sec = int(time.time() - start_epoch)
+        except (OSError, ValueError, IndexError):
+            token_age_sec = None
+        checks.append(
+            {
+                "name": "token_age_under_60min",
+                "ok": token_age_sec is not None and token_age_sec < 3300,
+                "detail": (
+                    f"{token_age_sec}s"
+                    if token_age_sec is not None
+                    else "could not measure"
+                ),
+            }
+        )
+        if token_age_sec is not None and token_age_sec >= 3300:
+            remediation = remediation or (
+                f"Token is {token_age_sec}s old — nearing or past "
+                f"GitHub's 1h cap.  The health-probe-daemon will refresh "
+                f"within 45 min; force a refresh now via "
+                f"scripts/hosted-sbr/refresh-sbr-token.sh."
+            )
+            if token_age_sec >= 3600:
+                ok = False
+
+        suggested_args: dict[str, Any] | None = None
+        if ok:
+            # Guide the voice agent to the canonical call shape.
+            suggested_args = {
+                "scope_issue_number": "<integer>",
+                "repo": "<owner/name>",
+            }
+
+        tool_log.info(
+            "preflight",
+            extra={"ok": ok, "gh_auth_ok": gh_auth_ok, "repo": repo},
+        )
+        return {
+            "ok": ok,
+            "checks": checks,
+            "remediation": remediation,
+            "suggested_args": suggested_args,
+        }
 
     # -----------------------------------------------------------------
     # Aliases for common voice-model hallucinations — delegate to the
