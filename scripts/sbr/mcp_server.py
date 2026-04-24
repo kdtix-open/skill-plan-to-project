@@ -58,6 +58,27 @@ except ImportError:  # pragma: no cover — import-time graceful failure
     TransportSecuritySettings = None  # type: ignore[assignment, misc]
 
 from scripts.sbr.api import SessionManager, WriteBacker
+from scripts.sbr.investigations import (
+    InvestigationDispatcher,
+    investigations_enabled,
+)
+
+
+def resolve_investigation_working_directory(repo: str | None, session_repo: str) -> str:
+    """Resolve the working directory for repo/issues investigations.
+
+    Priority: explicit `repo` arg > session.repo (both in owner/name
+    form).  Mapped to the host-mounted path inside the sbr-mcp
+    container via SBR_WORKING_DIRECTORY_ROOT (defaults to
+    /workspace/host-repos per docker-compose.yml).
+
+    Module-level so tests can exercise without spinning up FastMCP.
+    """
+    resolved = repo or session_repo
+    root = os.environ.get("SBR_WORKING_DIRECTORY_ROOT", "/workspace/host-repos")
+    name = resolved.split("/")[-1] if "/" in resolved else resolved
+    return f"{root.rstrip('/')}/{name}"
+
 
 # ---------------------------------------------------------------------------
 # Argument normalization for the start-session family of tools.
@@ -687,8 +708,7 @@ def _build_server(
                 )
             elif session.status == "terminated":
                 msg = (
-                    "Session was terminated.  Start a new review via "
-                    "sbr_start_session."
+                    "Session was terminated.  Start a new review via sbr_start_session."
                 )
             else:
                 msg = (
@@ -1080,18 +1100,24 @@ def _build_server(
     # Phase 2 wires them to the real bridge dispatcher.
     # ------------------------------------------------------------------
 
-    _investigations_enabled = os.environ.get(
-        "SBR_INVESTIGATIONS_ENABLED", ""
-    ).strip() in ("1", "true", "yes")
+    # Phase 2a wiring (2026-04-24): when SBR_INVESTIGATIONS_ENABLED is
+    # truthy, the four primary investigation tools dispatch via the
+    # local bridge at /investigate; otherwise they still return the
+    # dispatcher_disabled sentinel (Phase 1 behavior preserved).
+    _dispatcher = InvestigationDispatcher() if investigations_enabled() else None
 
     _disabled_response: dict[str, Any] = {
         "status": "dispatcher_disabled",
         "detail": (
             "SBR_INVESTIGATIONS_ENABLED is off; investigation tools are "
-            "scaffolding-only in Phase 1.  See docs/plans/"
+            "scaffolding-only until the flag is flipped.  See docs/plans/"
             "SBR Voice Agent Investigation Sub-Agent.md"
         ),
     }
+
+    # Use the module-level resolver (see top of file).  Bound local here
+    # so the tool bodies stay readable.
+    _default_working_directory = resolve_investigation_working_directory
 
     @mcp.tool()
     def sbr_review_repo(
@@ -1100,11 +1126,25 @@ def _build_server(
         repo: str | None = None,
     ) -> dict[str, Any]:
         """Dispatch a repo-review investigation (read code to answer a question).
-        Returns {job_id, status} when enabled; dispatcher_disabled otherwise."""
-        if not _investigations_enabled:
+
+        Runs as a Software Architect / Lead Engineer sub-agent via claude
+        CLI on the operator's host bridge.  Sub-agent has Read + Grep +
+        Glob + Bash(git:*) access scoped to the target repo's working
+        directory.  Returns status=ready + finding + summary when the
+        sub-agent completes; status=failed + error on any failure path
+        (bridge unreachable, claude exits non-zero, timeout).
+        """
+        if _dispatcher is None:
             return _disabled_response
-        # TODO(phase-2): dispatch via bridge POST /investigate
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        result = _dispatcher.dispatch(
+            session,
+            tool_kind="review_repo",
+            prompt=prompt,
+            working_directory=_default_working_directory(repo, session.repo),
+        )
+        mgr._atomic_write(session)
+        return result
 
     @mcp.tool()
     def sbr_review_plan(
@@ -1113,10 +1153,26 @@ def _build_server(
         plan_path: str | None = None,
     ) -> dict[str, Any]:
         """Dispatch a plan-review investigation (read plan docs for intent/assumptions).
-        Returns {job_id, status} when enabled; dispatcher_disabled otherwise."""
-        if not _investigations_enabled:
+
+        Sub-agent reads the markdown plan file(s) to answer questions
+        about missing assumptions, original intent, or implementation
+        prerequisites.  Tools: Read + Grep + Glob scoped to the
+        docs/plans/ tree of the session's target repo.
+        """
+        if _dispatcher is None:
             return _disabled_response
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        # plan_path is a hint; the sub-agent can navigate from the repo
+        # root's docs/plans/ regardless.  Working directory is the repo
+        # itself so relative paths resolve.
+        result = _dispatcher.dispatch(
+            session,
+            tool_kind="review_plan",
+            prompt=prompt if not plan_path else f"Plan file: {plan_path}\n\n{prompt}",
+            working_directory=_default_working_directory(None, session.repo),
+        )
+        mgr._atomic_write(session)
+        return result
 
     @mcp.tool()
     def sbr_research(
@@ -1124,12 +1180,29 @@ def _build_server(
         prompt: str,
     ) -> dict[str, Any]:
         """Dispatch an external-research investigation (web search + fetch).
-        Uses Opus 4.7 1M Max.  Budget confirmation required before dispatch.
-        Returns {job_id, status} when enabled; dispatcher_disabled otherwise."""
-        # TODO(kdtix-subscription): operator-paid provider today
-        if not _investigations_enabled:
+        Uses Opus 4.7 1M Max per operator decision C (2026-04-23).
+
+        Tools: WebFetch + WebSearch + Read + Grep.  Research gets the
+        higher-capacity model because synthesis across many sources
+        benefits from Opus's larger context.  Costs ~4-6x more than
+        the Sonnet-backed review tools; operator has admin-level budget
+        caps in the provider pages (charter rule #3).
+        """
+        # TODO(kdtix-subscription): operator-paid provider today; swap
+        # to hosted provider when subscription tier ships.
+        if _dispatcher is None:
             return _disabled_response
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        result = _dispatcher.dispatch(
+            session,
+            tool_kind="research",
+            prompt=prompt,
+            working_directory=_default_working_directory(None, session.repo),
+            # Model default (Opus) kicks in on the bridge side — no
+            # override here unless the operator explicitly wants Sonnet.
+        )
+        mgr._atomic_write(session)
+        return result
 
     @mcp.tool()
     def sbr_review_issues(
@@ -1138,38 +1211,111 @@ def _build_server(
         repo: str | None = None,
     ) -> dict[str, Any]:
         """Dispatch a GitHub-issues investigation (search for duplicates/related).
-        Returns {job_id, status} when enabled; dispatcher_disabled otherwise."""
-        if not _investigations_enabled:
+
+        Sub-agent uses `gh` CLI to search existing issues / PRs for
+        coverage of the operator's question.  Returns issue numbers +
+        status + linked PR numbers when matches are found.  Useful to
+        avoid duplicating work already tracked in the backlog.
+        """
+        if _dispatcher is None:
             return _disabled_response
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        result = _dispatcher.dispatch(
+            session,
+            tool_kind="review_issues",
+            prompt=prompt,
+            working_directory=_default_working_directory(repo, session.repo),
+        )
+        mgr._atomic_write(session)
+        return result
 
     @mcp.tool()
     def sbr_investigation_status(
         session_id: str,
         job_id: str,
     ) -> dict[str, Any]:
-        """Poll the status + findings of a dispatched investigation."""
-        if not _investigations_enabled:
+        """Poll the status + findings of a dispatched investigation.
+
+        Reads from session.investigations (populated by the four
+        dispatch tools above).  Returns {status, tool_kind, finding,
+        summary, error, cost_usd_estimate} for the matching job_id, OR
+        {status: "not_found"} if the job_id isn't in this session.
+        """
+        if _dispatcher is None:
             return _disabled_response
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        for inv in session.investigations:
+            if inv.job_id == job_id:
+                return {
+                    "job_id": inv.job_id,
+                    "status": inv.status,
+                    "tool_kind": inv.tool_kind,
+                    "model": inv.model,
+                    "finding": inv.finding,
+                    "summary": inv.summary,
+                    "error": inv.error,
+                    "cost_usd_estimate": inv.cost_usd_estimate,
+                    "dispatched_at": inv.dispatched_at,
+                    "completed_at": inv.completed_at,
+                }
+        return {"status": "not_found", "job_id": job_id}
 
     @mcp.tool()
     def sbr_list_investigations(
         session_id: str,
     ) -> dict[str, Any]:
-        """Return investigation history for the current session."""
-        if not _investigations_enabled:
+        """Return every investigation dispatched during this session.
+
+        Use when the operator asks "what investigations have we run?"
+        Voice agent narrates job_id + tool_kind + status + summary
+        for each.
+        """
+        if _dispatcher is None:
             return _disabled_response
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        return {
+            "count": len(session.investigations),
+            "investigations": [
+                {
+                    "job_id": inv.job_id,
+                    "status": inv.status,
+                    "tool_kind": inv.tool_kind,
+                    "summary": inv.summary,
+                    "dispatched_at": inv.dispatched_at,
+                    "cost_usd_estimate": inv.cost_usd_estimate,
+                }
+                for inv in session.investigations
+            ],
+        }
 
     @mcp.tool()
     def sbr_pending_investigations(
         session_id: str,
     ) -> dict[str, Any]:
-        """Return ready-but-unconsumed investigations."""
-        if not _investigations_enabled:
+        """Return investigations that are ready-but-unconsumed.
+
+        Voice agent calls this opportunistically between verdicts to
+        check whether a queued investigation has returned a finding.
+        When count > 0, voice agent offers to save a progress bookmark
+        + jump to review the finding(s).
+        """
+        if _dispatcher is None:
             return _disabled_response
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        ready = [inv for inv in session.investigations if inv.status == "ready"]
+        return {
+            "count": len(ready),
+            "investigations": [
+                {
+                    "job_id": inv.job_id,
+                    "tool_kind": inv.tool_kind,
+                    "summary": inv.summary,
+                    "from_bookmark_label": inv.from_bookmark_label,
+                    "dispatched_at": inv.dispatched_at,
+                }
+                for inv in ready
+            ],
+        }
 
     @mcp.tool()
     def sbr_save_bookmark(
@@ -1177,20 +1323,83 @@ def _build_server(
         label: str,
         reason: str = "progress_save",
     ) -> dict[str, Any]:
-        """Save current cursor position as a named bookmark for later return."""
-        if not _investigations_enabled:
+        """Save current cursor position as a named bookmark for later return.
+
+        Used by the voice agent to pin the operator's current review
+        position before dispatching an investigation or jumping to a
+        ready finding.  See docs/plans/SBR Voice Agent Investigation
+        Sub-Agent.md §4 for the bookmark state-machine.
+
+        Valid `reason` values: investigation_dispatched,
+        investigation_return, progress_save (default).
+        """
+        if _dispatcher is None:
             return _disabled_response
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        from scripts.sbr.api import Bookmark
+
+        current_issue = (
+            session.issues[session.current_issue_index]
+            if 0 <= session.current_issue_index < len(session.issues)
+            else None
+        )
+        current_sub = (
+            current_issue.subsections[session.current_subsection_index]
+            if current_issue
+            and 0 <= session.current_subsection_index < len(current_issue.subsections)
+            else None
+        )
+        bookmark = Bookmark(
+            label=label,
+            reason=reason,  # type: ignore[arg-type]
+            issue_index=session.current_issue_index,
+            subsection_index=session.current_subsection_index,
+            issue_number=current_issue.number if current_issue else 0,
+            subsection_key=current_sub.key if current_sub else "",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            linked_investigation_id=None,
+        )
+        session.bookmarks.append(bookmark)
+        mgr._atomic_write(session)
+        return {
+            "label": bookmark.label,
+            "reason": bookmark.reason,
+            "issue_number": bookmark.issue_number,
+            "subsection_key": bookmark.subsection_key,
+            "created_at": bookmark.created_at,
+        }
 
     @mcp.tool()
     def sbr_jump_to_bookmark(
         session_id: str,
         label: str,
     ) -> dict[str, Any]:
-        """Restore a saved bookmark — jump cursor back to that position."""
-        if not _investigations_enabled:
+        """Restore a saved bookmark — jump cursor back to that position.
+
+        Looks up the bookmark by label, restores session.current_issue_
+        index and session.current_subsection_index to the saved values,
+        and returns the subsection metadata so the voice agent can
+        re-narrate the section.
+
+        Returns {status: "not_found"} when no bookmark with that label
+        exists in the session.
+        """
+        if _dispatcher is None:
             return _disabled_response
-        return _disabled_response  # pragma: no cover
+        session = mgr.load(session_id)
+        for bookmark in session.bookmarks:
+            if bookmark.label == label:
+                session.current_issue_index = bookmark.issue_index
+                session.current_subsection_index = bookmark.subsection_index
+                mgr._atomic_write(session)
+                return {
+                    "status": "restored",
+                    "label": bookmark.label,
+                    "issue_number": bookmark.issue_number,
+                    "subsection_key": bookmark.subsection_key,
+                    "created_at": bookmark.created_at,
+                }
+        return {"status": "not_found", "label": label}
 
     return mcp
 

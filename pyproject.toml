@@ -63,6 +63,7 @@ ignore = [
     "S101",  # assert is expected in tests
     "S105",  # hardcoded-password-string — tests use literal fake tokens
     "S106",  # hardcoded-password-func-arg — tests pass literal fake tokens
+    "S108",  # insecure temp file — tests use /tmp/ literal paths without real I/O
 ]
 
 [tool.coverage.run]

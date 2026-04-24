@@ -558,8 +558,7 @@ class TestWriteBacker:
         )
         session.issues = [issue]
         before = (
-            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n"
-            "## Vision\n\nold\n\n---\n"
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n## Vision\n\nold\n\n---\n"
         )
         with (
             patch.object(api, "get_issue_body", return_value=before),
@@ -601,8 +600,7 @@ class TestWriteBacker:
         )
         session.issues = [issue]
         before = (
-            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n"
-            "## Vision\n\nold\n\n---\n"
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n## Vision\n\nold\n\n---\n"
         )
         captured_writes: list[str] = []
         with (
@@ -684,8 +682,7 @@ class TestWriteBacker:
         )
         session.issues = [issue]
         before = (
-            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n"
-            "## Vision\n\nold\n\n---\n"
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n## Vision\n\nold\n\n---\n"
         )
         captured = {}
         with (
