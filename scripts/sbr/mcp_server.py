@@ -1071,6 +1071,127 @@ def _build_server(
         mgr._atomic_write(session)
         return result
 
+    # ------------------------------------------------------------------
+    # Investigation Sub-Agent tools — Phase 1 stubs
+    # ------------------------------------------------------------------
+    # All 9 tools are registered unconditionally so the voice agent's
+    # schema includes them, but they return a "dispatcher_disabled"
+    # sentinel when SBR_INVESTIGATIONS_ENABLED is falsy (the default).
+    # Phase 2 wires them to the real bridge dispatcher.
+    # ------------------------------------------------------------------
+
+    _investigations_enabled = os.environ.get(
+        "SBR_INVESTIGATIONS_ENABLED", ""
+    ).strip() in ("1", "true", "yes")
+
+    _disabled_response: dict[str, Any] = {
+        "status": "dispatcher_disabled",
+        "detail": (
+            "SBR_INVESTIGATIONS_ENABLED is off; investigation tools are "
+            "scaffolding-only in Phase 1.  See docs/plans/"
+            "SBR Voice Agent Investigation Sub-Agent.md"
+        ),
+    }
+
+    @mcp.tool()
+    def sbr_review_repo(
+        session_id: str,
+        prompt: str,
+        repo: str | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch a repo-review investigation (read code to answer a question).
+        Returns {job_id, status} when enabled; dispatcher_disabled otherwise."""
+        if not _investigations_enabled:
+            return _disabled_response
+        # TODO(phase-2): dispatch via bridge POST /investigate
+        return _disabled_response  # pragma: no cover
+
+    @mcp.tool()
+    def sbr_review_plan(
+        session_id: str,
+        prompt: str,
+        plan_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch a plan-review investigation (read plan docs for intent/assumptions).
+        Returns {job_id, status} when enabled; dispatcher_disabled otherwise."""
+        if not _investigations_enabled:
+            return _disabled_response
+        return _disabled_response  # pragma: no cover
+
+    @mcp.tool()
+    def sbr_research(
+        session_id: str,
+        prompt: str,
+    ) -> dict[str, Any]:
+        """Dispatch an external-research investigation (web search + fetch).
+        Uses Opus 4.7 1M Max.  Budget confirmation required before dispatch.
+        Returns {job_id, status} when enabled; dispatcher_disabled otherwise."""
+        # TODO(kdtix-subscription): operator-paid provider today
+        if not _investigations_enabled:
+            return _disabled_response
+        return _disabled_response  # pragma: no cover
+
+    @mcp.tool()
+    def sbr_review_issues(
+        session_id: str,
+        prompt: str,
+        repo: str | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch a GitHub-issues investigation (search for duplicates/related).
+        Returns {job_id, status} when enabled; dispatcher_disabled otherwise."""
+        if not _investigations_enabled:
+            return _disabled_response
+        return _disabled_response  # pragma: no cover
+
+    @mcp.tool()
+    def sbr_investigation_status(
+        session_id: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        """Poll the status + findings of a dispatched investigation."""
+        if not _investigations_enabled:
+            return _disabled_response
+        return _disabled_response  # pragma: no cover
+
+    @mcp.tool()
+    def sbr_list_investigations(
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Return investigation history for the current session."""
+        if not _investigations_enabled:
+            return _disabled_response
+        return _disabled_response  # pragma: no cover
+
+    @mcp.tool()
+    def sbr_pending_investigations(
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Return ready-but-unconsumed investigations."""
+        if not _investigations_enabled:
+            return _disabled_response
+        return _disabled_response  # pragma: no cover
+
+    @mcp.tool()
+    def sbr_save_bookmark(
+        session_id: str,
+        label: str,
+        reason: str = "progress_save",
+    ) -> dict[str, Any]:
+        """Save current cursor position as a named bookmark for later return."""
+        if not _investigations_enabled:
+            return _disabled_response
+        return _disabled_response  # pragma: no cover
+
+    @mcp.tool()
+    def sbr_jump_to_bookmark(
+        session_id: str,
+        label: str,
+    ) -> dict[str, Any]:
+        """Restore a saved bookmark — jump cursor back to that position."""
+        if not _investigations_enabled:
+            return _disabled_response
+        return _disabled_response  # pragma: no cover
+
     return mcp
 
 

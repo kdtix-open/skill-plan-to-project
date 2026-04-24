@@ -748,3 +748,150 @@ class TestWriteBacker:
         sub = session.issues[0].subsections[0]
         assert sub.verdict == "improved"
         assert sub.approved_content == "clean body"  # terminator stripped
+
+
+# ---------------------------------------------------------------------------
+# Investigation + Bookmark dataclasses (Phase 1 scaffolding)
+# ---------------------------------------------------------------------------
+
+
+class TestInvestigationDataclass:
+    def test_round_trip(self):
+        inv = api.Investigation(
+            job_id="inv-001",
+            tool_kind="review_repo",
+            prompt="Does the bridge have OIDC stubs?",
+            context={"issue_number": 182, "subsection_key": "success_criteria"},
+            model="claude-sonnet-4-5-20250929",
+            dispatched_at="2026-04-23T12:00:00Z",
+        )
+        d = inv.to_dict()
+        assert d["job_id"] == "inv-001"
+        assert d["tool_kind"] == "review_repo"
+        assert d["status"] == "pending"
+        assert d["finding"] is None
+        assert d["cost_usd_estimate"] == 0.0
+
+        restored = api.Investigation.from_dict(d)
+        assert restored.job_id == inv.job_id
+        assert restored.context == inv.context
+        assert restored.model == inv.model
+
+    def test_defaults(self):
+        inv = api.Investigation(job_id="x", tool_kind="research", prompt="test")
+        assert inv.status == "pending"
+        assert inv.provider == "claude"
+        assert inv.completed_at is None
+        assert inv.summary is None
+        assert inv.act_on_suggestion is None
+
+    def test_from_dict_ignores_extra_keys(self):
+        d = {
+            "job_id": "inv-002",
+            "tool_kind": "review_plan",
+            "prompt": "test",
+            "future_field": "should be ignored",
+        }
+        inv = api.Investigation.from_dict(d)
+        assert inv.job_id == "inv-002"
+        assert not hasattr(inv, "future_field")
+
+
+class TestBookmarkDataclass:
+    def test_round_trip(self):
+        bm = api.Bookmark(
+            label="disp-001",
+            reason="investigation_dispatched",
+            issue_index=2,
+            subsection_index=3,
+            issue_number=182,
+            subsection_key="success_criteria",
+            created_at="2026-04-23T12:00:00Z",
+            linked_investigation_id="inv-001",
+        )
+        d = bm.to_dict()
+        assert d["label"] == "disp-001"
+        assert d["reason"] == "investigation_dispatched"
+        assert d["linked_investigation_id"] == "inv-001"
+
+        restored = api.Bookmark.from_dict(d)
+        assert restored.label == bm.label
+        assert restored.issue_index == bm.issue_index
+        assert restored.linked_investigation_id == bm.linked_investigation_id
+
+    def test_defaults(self):
+        bm = api.Bookmark(
+            label="x",
+            reason="progress_save",
+            issue_index=0,
+            subsection_index=0,
+        )
+        assert bm.issue_number == 0
+        assert bm.subsection_key == ""
+        assert bm.created_at == ""
+        assert bm.linked_investigation_id is None
+
+    def test_from_dict_ignores_extra_keys(self):
+        d = {
+            "label": "bm-002",
+            "reason": "progress_save",
+            "issue_index": 1,
+            "subsection_index": 0,
+            "unknown_field": 42,
+        }
+        bm = api.Bookmark.from_dict(d)
+        assert bm.label == "bm-002"
+
+
+class TestSessionInvestigationFields:
+    def test_session_round_trip_with_investigations(self):
+        inv = api.Investigation(
+            job_id="inv-010",
+            tool_kind="review_issues",
+            prompt="any duplicates of this?",
+            dispatched_at="2026-04-23T14:00:00Z",
+        )
+        bm = api.Bookmark(
+            label="disp-010",
+            reason="investigation_dispatched",
+            issue_index=1,
+            subsection_index=2,
+            issue_number=183,
+            subsection_key="done_when",
+            created_at="2026-04-23T14:00:00Z",
+            linked_investigation_id="inv-010",
+        )
+        session = api.Session(
+            session_id="sess-inv-test",
+            scope_issue_number=182,
+            repo="kdtix-open/agent-project-queue",
+            created_at="2026-04-23T14:00:00Z",
+            investigations=[inv],
+            bookmarks=[bm],
+            investigations_cost_usd=1.42,
+        )
+        d = session.to_dict()
+        assert len(d["investigations"]) == 1
+        assert len(d["bookmarks"]) == 1
+        assert d["investigations_cost_usd"] == 1.42
+
+        restored = api.Session.from_dict(d)
+        assert len(restored.investigations) == 1
+        assert restored.investigations[0].job_id == "inv-010"
+        assert len(restored.bookmarks) == 1
+        assert restored.bookmarks[0].label == "disp-010"
+        assert restored.investigations_cost_usd == 1.42
+
+    def test_backward_compat_old_session_json(self):
+        """Old session JSON without investigations/bookmarks fields."""
+        old = {
+            "session_id": "old-sess",
+            "scope_issue_number": 100,
+            "repo": "x/y",
+            "created_at": "2026-01-01T00:00:00Z",
+            "issues": [],
+        }
+        session = api.Session.from_dict(old)
+        assert session.investigations == []
+        assert session.bookmarks == []
+        assert session.investigations_cost_usd == 0.0

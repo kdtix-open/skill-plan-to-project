@@ -177,6 +177,81 @@ class WriteBackSnapshot:
 
 
 @dataclasses.dataclass
+class Investigation:
+    """One async investigation dispatched via the local bridge.
+
+    Persisted in Session.investigations so findings survive container
+    restarts.  Phase 1 scaffolding only — the dispatcher is wired in
+    Phase 2.
+    """
+
+    job_id: str
+    tool_kind: Literal["review_repo", "review_plan", "research", "review_issues"]
+    prompt: str
+    context: dict[str, Any] = dataclasses.field(default_factory=dict)
+    model: str = "claude-sonnet-4-5-20250929"
+    provider: Literal["claude", "codex", "cursor", "copilot"] = "claude"
+    status: Literal["pending", "running", "ready", "consumed", "failed"] = "pending"
+    dispatched_at: str = ""
+    completed_at: str | None = None
+    finding: str | None = None
+    error: str | None = None
+    cost_usd_estimate: float = 0.0
+    from_bookmark_label: str | None = None
+    summary: str | None = None
+    act_on_suggestion: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Investigation:
+        return cls(
+            **{
+                k: v
+                for k, v in d.items()
+                if k in {f.name for f in dataclasses.fields(cls)}
+            }
+        )
+
+
+@dataclasses.dataclass
+class Bookmark:
+    """A saved cursor position for investigation round-trips.
+
+    Persisted in Session.bookmarks.  The voice agent saves bookmarks
+    before dispatching investigations + before jumping to ready findings,
+    enabling a safe return to the operator's review progress.
+    """
+
+    label: str
+    reason: Literal[
+        "investigation_dispatched",
+        "investigation_return",
+        "progress_save",
+    ]
+    issue_index: int
+    subsection_index: int
+    issue_number: int = 0
+    subsection_key: str = ""
+    created_at: str = ""
+    linked_investigation_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Bookmark:
+        return cls(
+            **{
+                k: v
+                for k, v in d.items()
+                if k in {f.name for f in dataclasses.fields(cls)}
+            }
+        )
+
+
+@dataclasses.dataclass
 class IssueReview:
     """One issue under review.  Holds the queue of SubsectionReview items."""
 
@@ -242,6 +317,9 @@ class Session:
     current_subsection_index: int = 0
     skip_issues: list[int] = dataclasses.field(default_factory=list)
     issues: list[IssueReview] = dataclasses.field(default_factory=list)
+    investigations: list[Investigation] = dataclasses.field(default_factory=list)
+    bookmarks: list[Bookmark] = dataclasses.field(default_factory=list)
+    investigations_cost_usd: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -254,6 +332,9 @@ class Session:
             "current_subsection_index": self.current_subsection_index,
             "skip_issues": list(self.skip_issues),
             "issues": [i.to_dict() for i in self.issues],
+            "investigations": [inv.to_dict() for inv in self.investigations],
+            "bookmarks": [bm.to_dict() for bm in self.bookmarks],
+            "investigations_cost_usd": self.investigations_cost_usd,
         }
 
     @classmethod
@@ -268,6 +349,11 @@ class Session:
             current_subsection_index=d.get("current_subsection_index", 0),
             skip_issues=list(d.get("skip_issues", [])),
             issues=[IssueReview.from_dict(i) for i in d.get("issues", [])],
+            investigations=[
+                Investigation.from_dict(inv) for inv in d.get("investigations", [])
+            ],
+            bookmarks=[Bookmark.from_dict(bm) for bm in d.get("bookmarks", [])],
+            investigations_cost_usd=d.get("investigations_cost_usd", 0.0),
         )
 
 
