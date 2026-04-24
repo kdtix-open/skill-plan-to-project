@@ -114,8 +114,48 @@ class TestSessionManager:
             ),
         ):
             session = mgr.start(100, "owner/repo")
-            mgr.apply_verdict(session, "approved")
+            applied = mgr.apply_verdict(session, "approved")
+        assert applied is True
         assert session.current_subsection_index == 1
+
+    def test_apply_verdict_returns_false_when_paused(self, tmp_path):
+        """Regression — 2026-04-23 UAT bug: sbr_approve after sbr_pause
+        returned status="approved" while silently no-op'ing because
+        get_current_subsection returns None for non-active sessions.
+        apply_verdict must now surface the no-op to the caller so the
+        MCP tool can return status="no_op" instead of lying."""
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(
+                api, "get_issue_body", return_value="#### Business Problem\nx\n"
+            ),
+        ):
+            session = mgr.start(100, "owner/repo")
+            mgr.pause(session)
+            applied = mgr.apply_verdict(session, "approved")
+        assert applied is False
+        # Cursor did NOT advance.
+        assert session.current_subsection_index == 0
+        assert session.status == "paused"
+
+    def test_apply_verdict_returns_false_when_terminated(self, tmp_path):
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(
+                api, "get_issue_body", return_value="#### Business Problem\nx\n"
+            ),
+        ):
+            session = mgr.start(100, "owner/repo")
+            mgr.terminate(session)
+            applied = mgr.apply_verdict(session, "approved")
+        assert applied is False
+        assert session.status == "terminated"
 
     def test_apply_verdict_improved_stores_content(self, tmp_path):
         mgr = api.SessionManager(sessions_dir=tmp_path)
@@ -193,6 +233,85 @@ class TestSessionManager:
         loaded = mgr.load(session.session_id)
         assert loaded.current_subsection_index == 1
 
+    def test_go_back_decrements_cursor(self, tmp_path):
+        """Regression for 2026-04-23 UAT: operator wanted to revisit
+        a subsection after verdicting but there was no way back."""
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        body = "#### Business Problem\nx\n\n#### Success Criteria\n- A\n"
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(api, "get_issue_body", return_value=body),
+        ):
+            session = mgr.start(100, "owner/repo")
+            mgr.apply_verdict(session, "approved")
+            idx_before = session.current_subsection_index
+            assert idx_before > 0
+            mgr.go_back(session)
+            assert session.current_subsection_index == idx_before - 1
+
+    def test_goto_jumps_to_specified_issue(self, tmp_path):
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(api, "get_issue_body", return_value="x"),
+        ):
+            session = mgr.start(100, "owner/repo")
+            assert mgr.goto(session, issue_number=101) is True
+            assert session.issues[session.current_issue_index].number == 101
+
+    def test_goto_returns_false_for_unknown_issue(self, tmp_path):
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        with (
+            patch.object(
+                api, "_walk_existing_hierarchy", side_effect=self._walker_stub
+            ),
+            patch.object(api, "get_issue_body", return_value=""),
+        ):
+            session = mgr.start(100, "owner/repo")
+            assert mgr.goto(session, issue_number=9999) is False
+
+
+# ---------------------------------------------------------------------------
+# SubsectionReviewer table-fallback — fixes MoSCoW empty-dict bug
+# ---------------------------------------------------------------------------
+
+
+class TestSubsectionTableFallback:
+    def test_empty_moscow_dict_falls_back_to_raw_markdown(self):
+        """Regression for 2026-04-23 UAT: MoSCoW section came back as
+        '{}' (2 chars) because the structured parser couldn't decode
+        the markdown table.  Now falls back to raw text."""
+        body = (
+            "#### MoSCoW Classification\n"
+            "| Priority | Item |\n"
+            "|---|---|\n"
+            "| Must Have | A |\n"
+            "| Must Have | B |\n"
+            "| Should Have | C |\n\n"
+            "#### Done When\nx\n"
+        )
+        subs = api.SubsectionReviewer.ordered_subsections("scope", body)
+        moscow = next((s for s in subs if s.key == "moscow"), None)
+        assert moscow is not None
+        # If the structured parse was empty, the fallback should return
+        # the raw markdown table text (much longer than "{}").
+        if moscow.original_content in ("{}", "[]"):
+            raise AssertionError(
+                f"MoSCoW fell through to useless content: {moscow.original_content!r}"
+            )
+        assert (
+            len(moscow.original_content) > 10
+        ), f"MoSCoW content too short: {moscow.original_content!r}"
+        # Raw markdown should still be recognizable
+        assert (
+            "Must Have" in moscow.original_content
+            or "must" in moscow.original_content.lower()
+        )
+
 
 # ---------------------------------------------------------------------------
 # LLMPromptBuilder — prompt scaffolding
@@ -264,10 +383,23 @@ class TestWriteBacker:
         )
         session.issues = [issue]
 
+        # Realistic body — has ## User Story header + ## TL;DR header with
+        # `---` separators.  The surgical WriteBacker (2026-04-23) locates
+        # the ## User Story section and replaces its body; the ## TL;DR
+        # section is approved and must NOT be touched.
+        current_body = (
+            "# Story: Test\n\n"
+            "> **Status**: Backlog\n\n"
+            "---\n\n"
+            "## User Story\n\n"
+            "old As-a block\n\n"
+            "---\n\n"
+            "## TL;DR\n\n"
+            "Summary one-liner.\n\n"
+            "---\n"
+        )
         with (
-            patch.object(
-                api, "get_issue_body", return_value="# User Story: Test\n\nOld body."
-            ),
+            patch.object(api, "get_issue_body", return_value=current_body),
             patch.object(api, "update_issue_body") as upd,
         ):
             result = api.WriteBacker.write_back_issue(session, issue)
@@ -278,8 +410,485 @@ class TestWriteBacker:
         assert args[0] == "owner/repo"
         assert args[1] == 101
         new_body = args[2]
-        # Improved content appears in the rendered body
+        # Improved content appears in the new body
         assert "As a developer" in new_body
-        # WriteBacker returns diff summary
+        # Approved content is NOT re-written — surgical strategy leaves it
+        # untouched byte-for-byte.
+        assert "Summary one-liner." in new_body
+        # Old As-a block is GONE (the improved subsection replaced it)
+        assert "old As-a block" not in new_body
+        # WriteBacker returns diff summary with new strategy signal
         assert result["issue_number"] == 101
+        assert result["strategy"] == "surgical"
+        assert result["improvements_applied"] == ["user_story"]
         assert issue.write_back_completed is True
+
+    def test_write_back_skips_approved_sections_untouched(self, tmp_path):
+        """Regression — 2026-04-23 UAT bug: issue #182 lost approved
+        content when write-back regenerated the whole body from template
+        + template-loading failed silently.  The fix is a surgical
+        strategy that leaves approved sections byte-identical."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s2",
+            scope_issue_number=200,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        # Two sections: one approved (must stay EXACTLY as-is), one improved
+        # (must replace its body only).
+        issue = IssueReview(
+            number=201,
+            title="Project Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="approved",
+                    original_content="Vision body that must survive unchanged.",
+                    approved_content="Vision body that must survive unchanged.",
+                ),
+                SubsectionReview(
+                    key="business_problem",
+                    verdict="improved",
+                    original_content="Old problem statement.",
+                    approved_content="NEW problem statement with more detail.",
+                ),
+            ],
+        )
+        session.issues = [issue]
+
+        current_body = (
+            "<!-- custom operator comment -->\n\n"
+            "# Project Scope: Test\n\n"
+            "> **Status**: Backlog\n\n"
+            "---\n\n"
+            "## Vision\n\n"
+            "Vision body that must survive unchanged.\n\n"
+            "---\n\n"
+            "## Business Problem & Current State\n\n"
+            "Old problem statement.\n\n"
+            "---\n"
+        )
+        captured = {}
+        with (
+            patch.object(api, "get_issue_body", return_value=current_body),
+            patch.object(
+                api,
+                "update_issue_body",
+                side_effect=lambda r, n, b: captured.update(body=b),
+            ),
+        ):
+            api.WriteBacker.write_back_issue(session, issue)
+
+        new_body = captured["body"]
+        # Approved vision section: content unchanged, character-exact.
+        assert (
+            "## Vision\n\nVision body that must survive unchanged.\n\n---" in new_body
+        )
+        # Improved business_problem: new content replaces old.
+        assert "NEW problem statement with more detail." in new_body
+        assert "Old problem statement." not in new_body
+        # Operator's pre-heading comment is preserved.
+        assert new_body.startswith("<!-- custom operator comment -->")
+
+    def test_write_back_raises_when_improved_header_not_found(self, tmp_path):
+        """Fail-loud: an improved subsection whose header isn't in the
+        body MUST raise, not silently drop.  Otherwise the operator's
+        improvement is lost without feedback."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s3",
+            scope_issue_number=300,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(
+            number=301,
+            title="Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="improved",
+                    original_content="old",
+                    approved_content="new vision",
+                ),
+            ],
+        )
+        session.issues = [issue]
+
+        # Body has NO ## Vision header — surgical writeback must raise.
+        current_body = (
+            "# Scope: Test\n\nJust some content without the expected section.\n"
+        )
+        with (
+            patch.object(api, "get_issue_body", return_value=current_body),
+            patch.object(api, "update_issue_body") as upd,
+            pytest.raises(ValueError, match="could not locate section headers"),
+        ):
+            api.WriteBacker.write_back_issue(session, issue)
+        assert not upd.called  # did NOT write a corrupted body
+
+    def test_write_back_captures_rollback_snapshot(self, tmp_path):
+        """Regression — 2026-04-23 operator ask: capture pre-write body
+        in-session so rollback works without GitHub edit history."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s4",
+            scope_issue_number=400,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(
+            number=401,
+            title="Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="improved",
+                    original_content="old",
+                    approved_content="new vision content",
+                ),
+            ],
+        )
+        session.issues = [issue]
+        before = (
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n## Vision\n\nold\n\n---\n"
+        )
+        with (
+            patch.object(api, "get_issue_body", return_value=before),
+            patch.object(api, "update_issue_body"),
+        ):
+            result = api.WriteBacker.write_back_issue(session, issue)
+
+        assert result["rollback_available"] is True
+        assert result["write_back_index"] == 0
+        assert len(issue.write_back_history) == 1
+        snap = issue.write_back_history[0]
+        assert snap.before_body == before
+        assert "new vision content" in snap.after_body
+        assert snap.strategy == "surgical"
+        assert snap.improvements_applied == ["vision"]
+
+    def test_rollback_restores_pre_write_body(self, tmp_path):
+        """sbr_rollback_write_back replays the captured before_body."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s5",
+            scope_issue_number=500,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(
+            number=501,
+            title="Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="improved",
+                    original_content="old",
+                    approved_content="new vision content",
+                ),
+            ],
+        )
+        session.issues = [issue]
+        before = (
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n## Vision\n\nold\n\n---\n"
+        )
+        captured_writes: list[str] = []
+        with (
+            patch.object(api, "get_issue_body", return_value=before),
+            patch.object(
+                api,
+                "update_issue_body",
+                side_effect=lambda r, n, b: captured_writes.append(b),
+            ),
+        ):
+            api.WriteBacker.write_back_issue(session, issue)
+
+        # Now roll it back.  GET returns the new (post-write) body; rollback
+        # must call update with the ORIGINAL before_body.
+        post_write_body = captured_writes[-1]
+        with (
+            patch.object(api, "get_issue_body", return_value=post_write_body),
+            patch.object(
+                api,
+                "update_issue_body",
+                side_effect=lambda r, n, b: captured_writes.append(b),
+            ),
+        ):
+            rb = api.WriteBacker.rollback_write_back(session, issue)
+
+        assert rb["strategy"] == "rollback"
+        assert rb["rolled_back_index"] == 0
+        # The restore call wrote the original `before` body to GitHub.
+        assert captured_writes[-1] == before
+        # History now has two entries: the original write + the rollback.
+        assert len(issue.write_back_history) == 2
+        assert issue.write_back_history[1].strategy == "rollback"
+
+    def test_rollback_raises_when_no_history(self, tmp_path):
+        from scripts.sbr.api import IssueReview, Session
+
+        session = Session(
+            session_id="s6",
+            scope_issue_number=600,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(number=601, title="Scope: Test", level="scope")
+        session.issues = [issue]
+        with pytest.raises(ValueError, match="no write-back history"):
+            api.WriteBacker.rollback_write_back(session, issue)
+
+    def test_write_back_strips_voice_echoed_terminator(self, tmp_path):
+        """Regression — 2026-04-23 issue #182 morning session: the model
+        echoed the section separator `---` at the end of its improved
+        content.  WriteBacker re-added its own terminator + produced a
+        duplicate `---\\n\\n---\\n` cluster that the operator noticed
+        visually in the GitHub rendering.  Fix strips trailing
+        terminators from new content before re-inserting its own."""
+        from scripts.sbr.api import IssueReview, Session, SubsectionReview
+
+        session = Session(
+            session_id="s7",
+            scope_issue_number=700,
+            repo="owner/repo",
+            created_at="2026-04-22T00:00:00Z",
+        )
+        issue = IssueReview(
+            number=701,
+            title="Scope: Test",
+            level="scope",
+            subsections=[
+                SubsectionReview(
+                    key="vision",
+                    verdict="improved",
+                    original_content="old",
+                    # Voice-echoed terminator — THE bug-producing pattern.
+                    approved_content=(
+                        "New vision prose that reads the operator's "
+                        "approved content aloud.\n\n---"
+                    ),
+                ),
+            ],
+        )
+        session.issues = [issue]
+        before = (
+            "# Scope: Test\n\n> **Status**: Backlog\n\n---\n\n## Vision\n\nold\n\n---\n"
+        )
+        captured = {}
+        with (
+            patch.object(api, "get_issue_body", return_value=before),
+            patch.object(
+                api,
+                "update_issue_body",
+                side_effect=lambda r, n, b: captured.update(body=b),
+            ),
+        ):
+            api.WriteBacker.write_back_issue(session, issue)
+
+        written = captured["body"]
+        import re
+
+        # No double-`---` in the output.
+        double_hr = re.findall(r"\n---\s*\n\s*\n---\s*\n", written)
+        assert (
+            double_hr == []
+        ), f"expected zero double-hr clusters, got {len(double_hr)}: {written!r}"
+        # The improved content still reached the body.
+        assert "New vision prose" in written
+
+    def test_strip_helper_removes_stacked_terminators(self):
+        """The helper must strip multiple stacked `---` terminators, not
+        just one.  Voice content has been observed with `content\\n\\n
+        ---\\n\\n---` patterns."""
+        from scripts.sbr.api import _strip_trailing_section_terminator as strip_fn
+
+        assert strip_fn("body\n\n---") == "body"
+        assert strip_fn("body\n\n---\n\n---") == "body"
+        assert strip_fn("body\n\n---\n---\n---") == "body"
+        # Doesn't touch content without trailing terminator.
+        assert strip_fn("body without terminator") == "body without terminator"
+        # Doesn't touch `---` mid-content (only trailing).
+        assert strip_fn("body\n---\nmore body") == "body\n---\nmore body"
+
+    def test_apply_verdict_improved_strips_trailing_terminator(self, tmp_path):
+        """apply_verdict must clean voice-echoed terminators BEFORE
+        storing, so the session JSON stays tidy even if WriteBacker's
+        defense is ever bypassed."""
+        mgr = api.SessionManager(sessions_dir=tmp_path)
+        stub = [
+            {
+                "number": 100,
+                "title": "Project Scope: Test",
+                "level": "scope",
+                "parent_number": None,
+            }
+        ]
+        with (
+            patch.object(api, "_walk_existing_hierarchy", return_value=stub),
+            patch.object(
+                api, "get_issue_body", return_value="#### Business Problem\nx\n"
+            ),
+        ):
+            session = mgr.start(100, "owner/repo")
+            # Voice-echoed terminator on improved content:
+            mgr.apply_verdict(session, "improved", improved_content="clean body\n\n---")
+        sub = session.issues[0].subsections[0]
+        assert sub.verdict == "improved"
+        assert sub.approved_content == "clean body"  # terminator stripped
+
+
+# ---------------------------------------------------------------------------
+# Investigation + Bookmark dataclasses (Phase 1 scaffolding)
+# ---------------------------------------------------------------------------
+
+
+class TestInvestigationDataclass:
+    def test_round_trip(self):
+        inv = api.Investigation(
+            job_id="inv-001",
+            tool_kind="review_repo",
+            prompt="Does the bridge have OIDC stubs?",
+            context={"issue_number": 182, "subsection_key": "success_criteria"},
+            model="claude-sonnet-4-5-20250929",
+            dispatched_at="2026-04-23T12:00:00Z",
+        )
+        d = inv.to_dict()
+        assert d["job_id"] == "inv-001"
+        assert d["tool_kind"] == "review_repo"
+        assert d["status"] == "pending"
+        assert d["finding"] is None
+        assert d["cost_usd_estimate"] == 0.0
+
+        restored = api.Investigation.from_dict(d)
+        assert restored.job_id == inv.job_id
+        assert restored.context == inv.context
+        assert restored.model == inv.model
+
+    def test_defaults(self):
+        inv = api.Investigation(job_id="x", tool_kind="research", prompt="test")
+        assert inv.status == "pending"
+        assert inv.provider == "claude"
+        assert inv.completed_at is None
+        assert inv.summary is None
+        assert inv.act_on_suggestion is None
+
+    def test_from_dict_ignores_extra_keys(self):
+        d = {
+            "job_id": "inv-002",
+            "tool_kind": "review_plan",
+            "prompt": "test",
+            "future_field": "should be ignored",
+        }
+        inv = api.Investigation.from_dict(d)
+        assert inv.job_id == "inv-002"
+        assert not hasattr(inv, "future_field")
+
+
+class TestBookmarkDataclass:
+    def test_round_trip(self):
+        bm = api.Bookmark(
+            label="disp-001",
+            reason="investigation_dispatched",
+            issue_index=2,
+            subsection_index=3,
+            issue_number=182,
+            subsection_key="success_criteria",
+            created_at="2026-04-23T12:00:00Z",
+            linked_investigation_id="inv-001",
+        )
+        d = bm.to_dict()
+        assert d["label"] == "disp-001"
+        assert d["reason"] == "investigation_dispatched"
+        assert d["linked_investigation_id"] == "inv-001"
+
+        restored = api.Bookmark.from_dict(d)
+        assert restored.label == bm.label
+        assert restored.issue_index == bm.issue_index
+        assert restored.linked_investigation_id == bm.linked_investigation_id
+
+    def test_defaults(self):
+        bm = api.Bookmark(
+            label="x",
+            reason="progress_save",
+            issue_index=0,
+            subsection_index=0,
+        )
+        assert bm.issue_number == 0
+        assert bm.subsection_key == ""
+        assert bm.created_at == ""
+        assert bm.linked_investigation_id is None
+
+    def test_from_dict_ignores_extra_keys(self):
+        d = {
+            "label": "bm-002",
+            "reason": "progress_save",
+            "issue_index": 1,
+            "subsection_index": 0,
+            "unknown_field": 42,
+        }
+        bm = api.Bookmark.from_dict(d)
+        assert bm.label == "bm-002"
+
+
+class TestSessionInvestigationFields:
+    def test_session_round_trip_with_investigations(self):
+        inv = api.Investigation(
+            job_id="inv-010",
+            tool_kind="review_issues",
+            prompt="any duplicates of this?",
+            dispatched_at="2026-04-23T14:00:00Z",
+        )
+        bm = api.Bookmark(
+            label="disp-010",
+            reason="investigation_dispatched",
+            issue_index=1,
+            subsection_index=2,
+            issue_number=183,
+            subsection_key="done_when",
+            created_at="2026-04-23T14:00:00Z",
+            linked_investigation_id="inv-010",
+        )
+        session = api.Session(
+            session_id="sess-inv-test",
+            scope_issue_number=182,
+            repo="kdtix-open/agent-project-queue",
+            created_at="2026-04-23T14:00:00Z",
+            investigations=[inv],
+            bookmarks=[bm],
+            investigations_cost_usd=1.42,
+        )
+        d = session.to_dict()
+        assert len(d["investigations"]) == 1
+        assert len(d["bookmarks"]) == 1
+        assert d["investigations_cost_usd"] == 1.42
+
+        restored = api.Session.from_dict(d)
+        assert len(restored.investigations) == 1
+        assert restored.investigations[0].job_id == "inv-010"
+        assert len(restored.bookmarks) == 1
+        assert restored.bookmarks[0].label == "disp-010"
+        assert restored.investigations_cost_usd == 1.42
+
+    def test_backward_compat_old_session_json(self):
+        """Old session JSON without investigations/bookmarks fields."""
+        old = {
+            "session_id": "old-sess",
+            "scope_issue_number": 100,
+            "repo": "x/y",
+            "created_at": "2026-01-01T00:00:00Z",
+            "issues": [],
+        }
+        session = api.Session.from_dict(old)
+        assert session.investigations == []
+        assert session.bookmarks == []
+        assert session.investigations_cost_usd == 0.0
