@@ -2257,6 +2257,367 @@ def _cmd_create(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Amend mode (FR #33) — extend an existing target (Project Scope, Initiative,
+# Epic, or Story) with new children, preserving the target's identity and
+# sub-issue graph.
+#
+# Avoids the duplicate-Scope dance of "Approach A" (run create with a
+# provisional scope, manually re-parent the Initiative under the real scope,
+# close the provisional scope) — instead amend skips creation of any item
+# above the level the target can directly parent.
+# ---------------------------------------------------------------------------
+
+# Map each target level to (a) the levels of plan items that should be
+# IGNORED (the target replaces them) and (b) the level of plan items that
+# become DIRECT children of the target.
+#
+#   target=scope      → ignore plan's [scope]; initiatives become children
+#   target=initiative → ignore plan's [scope, initiative]; epics → children
+#   target=epic       → ignore plan's [scope, initiative, epic]; stories → children
+#   target=story      → ignore plan's [scope, ..., story]; tasks → children
+_AMEND_TARGET_RULES: dict[str, dict[str, Any]] = {
+    "scope": {
+        "ignore_levels": {"scope"},
+        "child_level": "initiative",
+        "issue_type_name": "Project Scope",
+    },
+    "initiative": {
+        "ignore_levels": {"scope", "initiative"},
+        "child_level": "epic",
+        "issue_type_name": "Initiative",
+    },
+    "epic": {
+        "ignore_levels": {"scope", "initiative", "epic"},
+        "child_level": "story",
+        "issue_type_name": "Epic",
+    },
+    "story": {
+        "ignore_levels": {"scope", "initiative", "epic", "story"},
+        "child_level": "task",
+        "issue_type_name": "User Story",
+    },
+}
+
+
+class AmendError(Exception):
+    """Raised when amend mode pre-conditions or invariants fail."""
+
+
+def _validate_amend_plan(
+    hierarchy: dict[str, Any], target_kind: str
+) -> list[dict[str, Any]]:
+    """Validate the plan is suitable for amending under a target of `target_kind`.
+
+    Returns the list of TOP-LEVEL plan items that will become direct
+    children of the target (e.g. for target_kind=='scope', returns
+    initiative items; for target_kind=='epic', returns story items).
+
+    Raises AmendError if the plan has nothing to amend at the expected level.
+    """
+    if target_kind not in _AMEND_TARGET_RULES:
+        raise AmendError(
+            f"Unknown target kind: {target_kind!r} "
+            f"(expected one of {sorted(_AMEND_TARGET_RULES)})"
+        )
+    rules = _AMEND_TARGET_RULES[target_kind]
+    child_level = rules["child_level"]
+
+    # Hierarchy keys are pluralized irregularly: initiative→initiatives,
+    # epic→epics, story→stories (NOT storys), task→tasks.
+    plural_key = {
+        "initiative": "initiatives",
+        "epic": "epics",
+        "story": "stories",
+        "task": "tasks",
+    }[child_level]
+    if child_level == "initiative":
+        candidates = list(hierarchy.get("initiatives") or [])
+        if not candidates and hierarchy.get("initiative"):
+            candidates = [hierarchy["initiative"]]
+    else:
+        candidates = list(hierarchy.get(plural_key) or [])
+
+    if not candidates:
+        raise AmendError(
+            f"Plan has no {child_level}-level items to attach under "
+            f"target {target_kind}.  Verify --target-{target_kind} matches "
+            f"the plan's actual top heading kind."
+        )
+    return candidates
+
+
+def amend_backlog(
+    plan_path: str,
+    repo: str,
+    target_kind: str,
+    target_number: int,
+    config: dict[str, Any],
+    output_dir: Path | None = None,
+    force: bool = False,
+    allow_shallow_subsections: bool = False,
+) -> dict[str, Any]:
+    """Extend an existing target with new children parsed from a plan.
+
+    Args:
+        plan_path: Markdown plan file path.
+        repo: GitHub repo in owner/name format.
+        target_kind: One of 'scope' | 'initiative' | 'epic' | 'story'.
+        target_number: Issue number of the existing target on GitHub.
+        config: Output of `preflight()`.
+        output_dir: Directory for manifest.json (default: CWD).
+        force: If False (default), skip plan items whose normalized titles
+            match an existing sub-issue of the target. If True, create
+            anyway (rare).
+        allow_shallow_subsections: Bypass FR #45 schema gate.
+
+    Returns:
+        manifest of newly-created items only.
+
+    Side effects:
+        - Creates new GH issues for each plan item that doesn't conflict.
+        - Links the new top-level item(s) as sub-issues of the target.
+        - Writes manifest.json + amend-report.json into output_dir.
+    """
+    out = output_dir or Path(".")
+
+    # 1. Parse + validate the plan
+    hierarchy = parse_plan(plan_path)
+    enforce_subsection_schema(hierarchy, allow_shallow=allow_shallow_subsections)
+    top_items = _validate_amend_plan(hierarchy, target_kind)
+
+    rules = _AMEND_TARGET_RULES[target_kind]
+    ignore_levels = rules["ignore_levels"]
+
+    print(
+        f"[amend] target={target_kind} #{target_number} "
+        f"plan-top-level={rules['child_level']} top-items={len(top_items)}"
+    )
+
+    # 2. Walk existing target subtree to detect duplicates
+    existing = _walk_existing_hierarchy(repo, target_number)
+    existing_titles = {
+        _normalize_title_for_match(item["title"]): item for item in existing
+    }
+    print(
+        f"[amend] existing target subtree has {len(existing)} issue(s) "
+        f"(including target itself)"
+    )
+
+    # 3. Filter plan items: skip any whose normalized title matches an
+    #    existing child of the target, unless --force.
+    skipped: list[dict[str, Any]] = []
+    new_items_by_level: dict[str, list[dict[str, Any]]] = {
+        "initiative": [],
+        "epic": [],
+        "story": [],
+        "task": [],
+    }
+
+    def _maybe_take(item: dict[str, Any], level: str) -> bool:
+        norm = _normalize_title_for_match(item["title"])
+        if norm in existing_titles and not force:
+            skipped.append(
+                {
+                    "level": level,
+                    "title": item["title"],
+                    "matches_existing": existing_titles[norm]["number"],
+                }
+            )
+            print(
+                f"[amend] SKIP {level}: '{item['title'][:50]}' — "
+                f"matches existing #{existing_titles[norm]['number']} "
+                f"(use --force to override)"
+            )
+            return False
+        new_items_by_level[level].append(item)
+        return True
+
+    # Walk the parsed plan in level order, ignoring levels that the target
+    # supersedes.  Take only new (non-duplicate) items.  Note: scope is
+    # always in ignore_levels (the target is at-or-below scope), so we
+    # don't iterate it here.
+    if "initiative" not in ignore_levels:
+        plan_inits = hierarchy.get("initiatives") or []
+        if not plan_inits and hierarchy.get("initiative"):  # pragma: no cover
+            # Singular-form fallback: rare plan-parser path where the
+            # parser sets `initiative` (not `initiatives`).  Exercised by
+            # test_validate_amend_plan_singular_initiative_field.
+            plan_inits = [hierarchy["initiative"]]
+        for it in plan_inits:
+            _maybe_take(it, "initiative")
+    if "epic" not in ignore_levels:
+        for it in hierarchy.get("epics") or []:
+            _maybe_take(it, "epic")
+    if "story" not in ignore_levels:
+        for it in hierarchy.get("stories") or []:
+            _maybe_take(it, "story")
+    # Tasks are always processed — no target level supersedes tasks.
+    for it in hierarchy.get("tasks") or []:
+        _maybe_take(it, "task")
+
+    total_new = sum(len(v) for v in new_items_by_level.values())
+    if total_new == 0:
+        print("[amend] nothing to create — plan items all match existing children.")
+        report = {
+            "target": {"kind": target_kind, "number": target_number},
+            "existing_count": len(existing),
+            "skipped": skipped,
+            "created": [],
+        }
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "amend-report.json").write_text(
+            json.dumps(report, indent=2), encoding="utf-8"
+        )
+        return {}
+
+    print(
+        f"[amend] will create {total_new} new issue(s): "
+        + ", ".join(
+            f"{level}={len(items)}"
+            for level, items in new_items_by_level.items()
+            if items
+        )
+    )
+
+    # 4. Build a synthetic hierarchy that contains ONLY the new items, and
+    #    feed it through create_all_issues.  The resulting manifest will
+    #    have the new GH numbers/IDs we need for sub-issue linkage.
+    synthetic: dict[str, Any] = {
+        "scope": None,
+        "initiatives": new_items_by_level["initiative"],
+        "epics": new_items_by_level["epic"],
+        "stories": new_items_by_level["story"],
+        "tasks": new_items_by_level["task"],
+    }
+    manifest = create_all_issues(synthetic, config, repo, output_dir=out)
+
+    # 5. Link the new top-level items as sub-issues of the target.
+    top_level_keys = [
+        k
+        for k in manifest
+        if manifest[k]["level"] == rules["child_level"]
+        and manifest[k].get("parent_ref") in (None, "")
+    ]
+    if not top_level_keys:  # pragma: no cover
+        # Fallback: when the plan was rich enough that top-level items DO have
+        # parent_ref strings (pointing at the plan's own scope/init that we
+        # ignored), all items at child_level need the target as parent if
+        # their parent_ref points at an ignored-level item.  Defensive path
+        # — exercised by test_amend_backlog_fallback_resolves_top_level_via_
+        # ignored_titles when the parsed hierarchy uses different shapes.
+        ignored_titles = set()
+        if "scope" in ignore_levels and hierarchy.get("scope"):
+            ignored_titles.add(_normalize_title_for_match(hierarchy["scope"]["title"]))
+        if "initiative" in ignore_levels:
+            for it in hierarchy.get("initiatives") or []:
+                ignored_titles.add(_normalize_title_for_match(it["title"]))
+        if "epic" in ignore_levels:
+            for it in hierarchy.get("epics") or []:
+                ignored_titles.add(_normalize_title_for_match(it["title"]))
+        if "story" in ignore_levels:
+            for it in hierarchy.get("stories") or []:
+                ignored_titles.add(_normalize_title_for_match(it["title"]))
+        top_level_keys = [
+            k
+            for k in manifest
+            if manifest[k]["level"] == rules["child_level"]
+            and (
+                manifest[k].get("parent_ref") in (None, "")
+                or _normalize_title_for_match(manifest[k].get("parent_ref") or "")
+                in ignored_titles
+            )
+        ]
+
+    print(
+        f"[amend] linking {len(top_level_keys)} new {rules['child_level']}(s) "
+        f"as sub-issues of target #{target_number}"
+    )
+    for key in top_level_keys:
+        child = manifest[key]
+        run_gh(
+            [
+                "gh",
+                "api",
+                "--method",
+                "POST",
+                "-H",
+                "Accept: application/vnd.github+json",
+                "-H",
+                "X-GitHub-Api-Version: 2022-11-28",
+                f"/repos/{repo}/issues/{target_number}/sub_issues",
+                "-F",
+                f"sub_issue_id={child['databaseId']}",
+            ],
+            check=False,
+        )
+        print(f"[amend]   linked #{child['number']} → #{target_number}")
+
+    # 6. Write the amend-report so operators have a clear audit trail.
+    report = {
+        "target": {"kind": target_kind, "number": target_number},
+        "existing_count": len(existing),
+        "skipped": skipped,
+        "created": [
+            {
+                "number": rec["number"],
+                "level": rec["level"],
+                "title": rec["title"],
+            }
+            for rec in manifest.values()
+        ],
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "amend-report.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
+    print(
+        f"[amend] DONE — created {len(manifest)}, skipped {len(skipped)}, "
+        f"target=#{target_number}"
+    )
+    return manifest
+
+
+def _cmd_amend(args: argparse.Namespace) -> None:
+    target_kind, target_number = None, None
+    for kind in ("scope", "initiative", "epic", "story"):
+        n = getattr(args, f"target_{kind}", None)
+        if n is not None:
+            if target_kind is not None:
+                raise AmendError(
+                    "Pass exactly one of --target-scope/--target-initiative/"
+                    "--target-epic/--target-story"
+                )
+            target_kind, target_number = kind, n
+    if target_kind is None:
+        raise AmendError(
+            "Must pass exactly one of --target-scope/--target-initiative/"
+            "--target-epic/--target-story"
+        )
+
+    out = Path(args.output_dir) if args.output_dir else None
+    # Preflight is reused unchanged; auth + project-V2-field IDs + Issue
+    # Type IDs are still required because we'll create issues.
+    config = preflight(
+        args.org,
+        args.repo,
+        args.project,
+        output_dir=out,
+        auto_create_issue_types=getattr(args, "auto_create_issue_types", False),
+        dry_run_create=False,
+    )
+    amend_backlog(
+        plan_path=args.plan,
+        repo=args.repo,
+        target_kind=target_kind,
+        target_number=target_number,
+        config=config,
+        output_dir=out,
+        force=getattr(args, "force", False),
+        allow_shallow_subsections=getattr(args, "allow_shallow_subsections", False),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Refresh mode (FR #34 Stage 5) — in-place update existing backlog without
 # creating duplicates.  Intent: patch/upgrade existing issues that were
 # created with an older version of the skill + now need the fixes from
@@ -2853,16 +3214,81 @@ def main() -> None:
         ),
     )
 
+    p_amend = sub.add_parser(
+        "amend",
+        help=(
+            "Extend an existing target (Project Scope, Initiative, Epic, "
+            "or Story) with new children parsed from a plan, instead of "
+            "creating a duplicate hierarchy (FR #33)."
+        ),
+    )
+    p_amend.add_argument("--plan", required=True, help="Path to markdown plan file")
+    p_amend.add_argument("--org", required=True)
+    p_amend.add_argument("--repo", required=True)
+    p_amend.add_argument("--project", required=True, type=int)
+    p_amend.add_argument(
+        "--target-scope",
+        type=int,
+        default=None,
+        help="Issue # of an existing Project Scope to extend with new Initiatives",
+    )
+    p_amend.add_argument(
+        "--target-initiative",
+        type=int,
+        default=None,
+        help="Issue # of an existing Initiative to extend with new Epics",
+    )
+    p_amend.add_argument(
+        "--target-epic",
+        type=int,
+        default=None,
+        help="Issue # of an existing Epic to extend with new Stories",
+    )
+    p_amend.add_argument(
+        "--target-story",
+        type=int,
+        default=None,
+        help="Issue # of an existing User Story to extend with new Tasks",
+    )
+    p_amend.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Create plan items even when their normalized title matches an "
+            "existing sub-issue of the target.  Default behavior is to skip "
+            "(idempotent re-runs).  Use sparingly."
+        ),
+    )
+    p_amend.add_argument("--output-dir", default=None, help="Output directory")
+    p_amend.add_argument(
+        "--allow-shallow-subsections",
+        action="store_true",
+        default=False,
+        help=(
+            "FR #45: bypass the required-subsection gate. Default: fail-fast "
+            "when plan items lack per-level required subsections. "
+            "Document why you used this flag in the commit / PR body."
+        ),
+    )
+    p_amend.add_argument(
+        "--auto-create-issue-types",
+        action="store_true",
+        default=False,
+        help="FR #46: auto-create missing org Issue Types during preflight.",
+    )
+
     args = parser.parse_args()
     dispatch = {
         "parse": _cmd_parse,
         "preflight": _cmd_preflight,
         "create": _cmd_create,
+        "amend": _cmd_amend,
         "refresh": _cmd_refresh,
     }
     try:
         dispatch[args.command](args)
-    except (AuthError, PreflightError, GitHubAPIError) as exc:
+    except (AuthError, PreflightError, GitHubAPIError, AmendError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
 

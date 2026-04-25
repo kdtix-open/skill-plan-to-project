@@ -261,6 +261,62 @@ the body would change. Defaults to `--dry-run` — you must explicitly pass
 `--apply` to mutate GitHub. The dry-run report (`refresh-report.json`) includes
 a unified diff per would-update so you can review exactly what changes.
 
+### Amend mode (FR #33) — extend an existing target with new children
+
+```bash
+# Extend an existing Project Scope with new Initiatives + Epics + Stories + Tasks
+python scripts/create_issues.py amend \
+  --plan PLAN_FILE \
+  --org ORG --repo REPO --project PROJECT_NUMBER \
+  --target-scope SCOPE_NUMBER
+
+# Extend an existing Initiative with new Epics + descendants
+python scripts/create_issues.py amend \
+  --plan PLAN_FILE \
+  --org ORG --repo REPO --project PROJECT_NUMBER \
+  --target-initiative INIT_NUMBER
+
+# Extend an existing Epic with new Stories + Tasks
+python scripts/create_issues.py amend \
+  --plan PLAN_FILE \
+  --org ORG --repo REPO --project PROJECT_NUMBER \
+  --target-epic EPIC_NUMBER
+
+# Extend an existing User Story with new Tasks
+python scripts/create_issues.py amend \
+  --plan PLAN_FILE \
+  --org ORG --repo REPO --project PROJECT_NUMBER \
+  --target-story STORY_NUMBER
+```
+
+Replaces the workaround "Approach A" of running `create` with a provisional
+Scope, manually re-parenting the new Initiative under the real Scope, and
+closing the provisional Scope.
+
+**Behavior:**
+
+- The plan is parsed normally; items at-and-above the target's level are
+  IGNORED. For `--target-scope`, the plan's `# Project Scope:` heading is
+  treated as a placeholder for the existing target. For `--target-epic`,
+  any `# Project Scope:` / `## Initiative:` / `### Epic:` headings are
+  ignored; only stories + tasks become children of the existing epic.
+- New top-level extension items (Initiative for `--target-scope`; Epic for
+  `--target-initiative`; Story for `--target-epic`; Task for
+  `--target-story`) are linked as direct sub-issues of the target via the
+  GitHub sub-issues REST API.
+- **Idempotent re-runs**: any plan item whose normalized title matches an
+  existing sub-issue (at any depth) of the target is SKIPPED with a clear
+  console message. Pass `--force` to override (rare; use carefully).
+- An `amend-report.json` is written to the output directory recording
+  target, existing-subtree count, items skipped (with the matched issue
+  number), and items created.
+- `--allow-shallow-subsections` and `--auto-create-issue-types` work
+  identically to `create`.
+
+**Compliance check (Phase 8):** when run after amend, the compliance check
+should be passed `manifest.json` (which contains only the newly-created
+items), so it scans only those bodies — not the pre-existing target subtree.
+
 ### Refresh subtree (placeholder-only, plan-free)
 
 ```bash
