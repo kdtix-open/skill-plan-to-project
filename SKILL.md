@@ -261,6 +261,38 @@ the body would change. Defaults to `--dry-run` — you must explicitly pass
 `--apply` to mutate GitHub. The dry-run report (`refresh-report.json`) includes
 a unified diff per would-update so you can review exactly what changes.
 
+### Refresh subtree (placeholder-only, plan-free)
+
+```bash
+# Dry-run preview (no writes):
+python scripts/refresh_subtree.py \
+  --parent SCOPE_OR_INITIATIVE_NUMBER --repo REPO --dry-run
+
+# Apply (writes to GitHub):
+python scripts/refresh_subtree.py \
+  --parent SCOPE_OR_INITIATIVE_NUMBER --repo REPO
+```
+
+A narrower companion to `create_issues.py refresh`. Walks the sub-issue
+tree rooted at `--parent`, fetches each issue body, and replaces unfilled
+`[PLACEHOLDER]` template stubs (e.g. `[CRITERION 1]`, `[ITEM]`,
+`[FEATURE]`, `[SCENARIO NAME]`) with deterministic
+`_To be defined during planning_` markers so the bodies pass the FR #34
+placeholder gate. Does NOT pull in plan narrative — use this when:
+
+- A `create --allow-shallow-subsections` run left bodies with placeholder
+  leaks and you don't yet have time to author the missing subsections,
+  but you need the bodies to pass the gate today.
+- The parent subtree contains items NOT in any plan markdown (extension
+  stories added later by other agents). `create_issues.py refresh`
+  reports those as `UNMATCHED` and skips them; this tool processes them.
+- You want a fast `_TBD_`-style pass before the operator authors the
+  real per-story Acceptance Criteria.
+
+`--include-closed` refreshes closed issues too (default: skip). `--limit N`
+limits the run for testing. Output is idempotent — running it twice on the
+same subtree produces no second-pass changes.
+
 ### Structured subsection schema (FR #34 Stage 2)
 
 Plans may opt into per-item structured subsections to populate template
