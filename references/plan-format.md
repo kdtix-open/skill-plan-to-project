@@ -317,3 +317,23 @@ sequenceDiagram
 
 When an item has more than one diagram, each diagram gets a `### <Type>`
 sub-heading in the rendered section so readers can navigate between them.
+
+## Authoring at scale
+
+A plan with full Stage-2 subsection coverage (every Story has `User Story`,
+`Why This Matters`, `I Know I Am Done When`, `Acceptance Criteria`, `MoSCoW`,
+etc.) produces the highest-fidelity rendered issue bodies and the least
+placeholder leakage. That depth also makes the plan the single most
+context-rich artifact a Worker or Reviewer can read.
+
+Producing that depth efficiently requires scoped authoring. A single agent
+reading the entire plan for a large backlog (>1 Epic × >5 Stories per Epic)
+will hit comfortable context budgets before it finishes writing — producing
+shallow or truncated subsections, or timing out entirely. The better approach
+is to fan the authoring work out across multiple sub-agents, one per Epic,
+each given only that Epic's body and its child Story titles.
+
+See [sub-agent-fan-out-pattern.md](./sub-agent-fan-out-pattern.md) for the
+full operator workflow: when to use it, how to isolate each sub-agent in its
+own git worktree, what context each sub-agent needs in its prompt, and how to
+compose and merge the resulting PRs without conflicts.

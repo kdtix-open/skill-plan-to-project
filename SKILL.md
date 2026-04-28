@@ -151,6 +151,11 @@ Reads the markdown plan and extracts the 5-level hierarchy (Scope → Initiative
 Epics → Stories → Tasks) with title, description, priority, size, parent reference,
 and blocking relationships. Prints a summary for review.
 
+> **For backlogs spanning multiple Epics × multiple Stories per Epic**, see
+> [references/sub-agent-fan-out-pattern.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/sub-agent-fan-out-pattern.md)
+> for the proven per-layer sub-agent orchestration pattern. Single-agent
+> runs against >50-issue backlogs hit context limits and timeouts.
+
 ### Phase 3 — Create issues (top-down)
 
 ```bash
