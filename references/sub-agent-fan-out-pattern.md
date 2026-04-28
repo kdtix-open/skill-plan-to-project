@@ -50,16 +50,17 @@ Branch name:    plan/{epic-id}-{purpose}
 Examples from the Slice 2 fan-out:
 
 ```
-/tmp/sdlca-ep-001-why-done-ac/   →   plan/ep-001-why-done-ac
-/tmp/sdlca-ep-002-why-done-ac/   →   plan/ep-002-why-done-ac
+/tmp/sdlca-ep-024-why-done-ac/   →   plan/ep-024-why-done-ac
+/tmp/sdlca-ep-025-why-done-ac/   →   plan/ep-025-why-done-ac
 ...
 /tmp/sdlca-ep-006-why-done-ac/   →   plan/ep-006-why-done-ac
 ```
 
 **Per-sub-agent constraints:**
 
-- Edit **one file only** per sub-agent run (the plan markdown, or a batch of
-  GitHub issue bodies for that Epic — not both).
+- Edit **one file only** per sub-agent run (the plan markdown). **Do NOT**
+  edit GitHub issue bodies directly — that's the anti-pattern this doc
+  replaces (see "Anti-Pattern" section below).
 - One PR per sub-agent. Do not batch multiple Epics into one PR.
 - The sub-agent must not create, rename, or delete any file outside its
   designated worktree path.
@@ -118,9 +119,9 @@ canonical R-10/R-11/R-12 quality benchmarks for this skill's output:
 ```
 Quality standard: match the depth and specificity of the following reference
 Stories from the same repo:
-  - #266 — [R-10 Story title]
-  - #267 — [R-11 Story title]
-  - #268 — [R-12 Story title]
+  - #266 — Story: Self-Heal R-10 — Bridge credential allow-list must accept generic GITHUB_TOKEN / GH_TOKEN
+  - #267 — Story: Self-Heal R-11 — Worker auth-probe must use git ls-remote ground-truth
+  - #268 — Story: Self-Heal R-12 — Bridge restart must drain in-flight worker runs
 ```
 
 Replace the placeholders with the actual issue titles when you build the
@@ -145,7 +146,7 @@ A single agent attempting 50+ Stories in one pass will:
   body, and per-subsection output. At ~8 Stories per Epic × 6 Epics, the
   working context easily exceeds 100 K tokens before the agent begins writing.
 
-- **Stream-time out.** The prior session's first attempt at direct issue-body
+- **Stream-timed-out.** The prior session's first attempt at direct issue-body
   editing timed out after 17–36 minutes per agent with 0 issue writes. Long
   chains of tool calls consume context faster than they produce durable output.
 
@@ -170,8 +171,9 @@ when the PRs touch non-overlapping issue numbers:
   live in distinct line ranges of the plan markdown. Git handles
   non-overlapping additions cleanly — no merge conflicts.
 - Round 2 PRs (#574–#579) added different subsections to the same Stories.
-  Because each sub-agent appended to existing bodies rather than replacing
-  them, the diffs were again non-overlapping.
+  Because each sub-agent appended new subsections to existing Story sections
+  in the plan markdown rather than replacing them, the diffs were again
+  non-overlapping.
 
 **Ordering rule:** merge PRs in any order WHEN their line ranges do not
 overlap. If two sub-agent PRs do touch the same lines (e.g. two agents
@@ -179,11 +181,15 @@ both authored the same subsection by mistake), merge the first, then
 rebase or resolve the second before merging.
 
 For teams wanting to verify merge safety before merging sequentially,
-`git merge-tree` can simulate the three-way merge:
+`git merge-tree` can simulate the merge (the modern 2-argument form returns
+the merged tree or exits non-zero on conflicts):
 
 ```bash
-# Check whether pr-branch-1 and pr-branch-2 would conflict if both merged into main
-git merge-tree $(git merge-base main pr-branch-1) main pr-branch-2
+# Check if pr-branch-2 merges cleanly into main (exit 0 = no conflicts)
+git merge-tree main pr-branch-2
+
+# Or check if the two branches would conflict with each other when both merged into main
+git merge-tree pr-branch-1 pr-branch-2
 ```
 
 See the [git merge-tree documentation](https://git-scm.com/docs/git-merge-tree)
