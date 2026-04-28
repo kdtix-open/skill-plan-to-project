@@ -2185,6 +2185,103 @@ def _iter_hierarchy_items(
     return out
 
 
+_ALLOW_SHALLOW_SAFETY_PHRASE = "AGREE TO SHALLOW SUBSECTIONS"
+_ALLOW_SHALLOW_SAFETY_ENV_VAR = "SKILL_PLAN_TO_PROJECT_SHALLOW_SUBSECTIONS_CONFIRM"
+
+
+def _confirm_allow_shallow_subsections_safety_phrase() -> None:
+    """
+    Safety-phrase gate for --allow-shallow-subsections (added 2026-04-27).
+
+    Forces the operator to make a conscious, deliberate decision to bypass the
+    FR #45 subsection-schema gate. Two acceptance paths:
+
+      1. Interactive (TTY): prompts the operator to type the exact phrase
+         `AGREE TO SHALLOW SUBSECTIONS`. Anything else aborts with exit 3.
+
+      2. Non-interactive (CI / scripts): must set the env var
+         `SKILL_PLAN_TO_PROJECT_SHALLOW_SUBSECTIONS_CONFIRM` to the same
+         exact phrase. Anything else aborts with exit 3.
+
+    Both paths fail-closed. By design this is awkward to automate — the
+    point is to keep `--allow-shallow-subsections` from being silently
+    used as a routine flag, which is what produced 30+ empty-template
+    story bodies under PS-182 in 2026-04 and derailed weeks of dispatch
+    work.
+
+    Returns None on confirmed acceptance. Calls sys.exit(3) on any
+    mismatch / missing path / non-interactive without env var.
+    """
+    expected = _ALLOW_SHALLOW_SAFETY_PHRASE
+    env_var_name = _ALLOW_SHALLOW_SAFETY_ENV_VAR
+
+    env_value = os.environ.get(env_var_name, "")
+    if env_value:
+        if env_value == expected:
+            print(
+                f"[subsection-schema] safety phrase confirmed via env var "
+                f"{env_var_name}.",
+                file=sys.stderr,
+            )
+            return
+        print(
+            f"\n[subsection-schema] FAIL: env var {env_var_name} is set but does\n"
+            f"  not match the required safety phrase. Set it to (exact match,\n"
+            f"  including capitalisation and spaces):\n"
+            f"    '{expected}'",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+
+    if not sys.stdin.isatty():
+        print(
+            f"\n[subsection-schema] FAIL: --allow-shallow-subsections requires explicit\n"
+            f"  operator confirmation. This run has no TTY (e.g. CI / piped stdin),\n"
+            f"  so the interactive prompt cannot be shown.\n"
+            f"  Either:\n"
+            f"    (a) Run interactively in a terminal so you can type the safety phrase, OR\n"
+            f"    (b) Set env var {env_var_name} to the exact phrase:\n"
+            f"          {env_var_name}='{expected}'\n"
+            f"  This guard exists because shallow-bypass produced 30+ empty-template\n"
+            f"  issue bodies under PS-182 in 2026-04. Don't disable it without the\n"
+            f"  safety phrase.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+
+    print(
+        f"\n[subsection-schema] --allow-shallow-subsections requires confirmation.\n"
+        f"  This bypass produced 30+ empty-template issue bodies under PS-182 in\n"
+        f"  2026-04 and derailed weeks of orchestrated dispatch.\n"
+        f"\n"
+        f"  Type the EXACT phrase below to proceed (case + spaces matter):\n"
+        f"    {expected}\n",
+        file=sys.stderr,
+    )
+    try:
+        response = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print(
+            "\n[subsection-schema] FAIL: confirmation cancelled. Aborting.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+    if response == expected:
+        print(
+            "[subsection-schema] safety phrase confirmed — proceeding with shallow "
+            "subsections.",
+            file=sys.stderr,
+        )
+        return
+    print(
+        f"\n[subsection-schema] FAIL: safety phrase did not match. Aborting.\n"
+        f"  Expected: '{expected}'\n"
+        f"  Got:      '{response}'",
+        file=sys.stderr,
+    )
+    sys.exit(3)
+
+
 def enforce_subsection_schema(
     hierarchy: dict[str, Any],
     allow_shallow: bool = False,
@@ -2220,6 +2317,17 @@ def enforce_subsection_schema(
         print(f"    missing: {', '.join(missing)}", file=sys.stderr)
 
     if allow_shallow:
+        # Safety-phrase confirmation gate (added 2026-04-27 per operator
+        # directive after PS-182 incident: a routine `--allow-shallow-subsections`
+        # run silently produced 30+ empty-template story bodies that workers
+        # could not act on, derailing weeks of orchestrated dispatch).
+        #
+        # Force the operator to type the EXACT phrase below before the bypass
+        # is accepted. Non-interactive runs (CI / scripts) must set the env
+        # var SKILL_PLAN_TO_PROJECT_SHALLOW_SUBSECTIONS_CONFIRM to the same
+        # exact phrase. Both paths require a deliberate, conscious decision —
+        # by design, this is awkward to automate.
+        _confirm_allow_shallow_subsections_safety_phrase()
         print(
             "\n[subsection-schema] --allow-shallow-subsections set; proceeding.\n"
             "  Generated issue bodies will carry template placeholder leaks\n"
@@ -2232,7 +2340,9 @@ def enforce_subsection_schema(
     print(
         "\n[subsection-schema] FAIL: plans MUST use the full subsection schema.\n"
         "  See references/plan-format.md for per-level required subsections.\n"
-        "  Emergency bypass: pass --allow-shallow-subsections (document why).",
+        "  Emergency bypass: pass --allow-shallow-subsections AND confirm the\n"
+        "  safety phrase 'AGREE TO SHALLOW SUBSECTIONS' (interactive prompt or\n"
+        "  env var SKILL_PLAN_TO_PROJECT_SHALLOW_SUBSECTIONS_CONFIRM). Document why.",
         file=sys.stderr,
     )
     sys.exit(3)
@@ -3147,7 +3257,11 @@ def main() -> None:
         help=(
             "FR #45: bypass the required-subsection gate (default: fail-fast "
             "when plan items lack per-level required subsections). "
-            "Use SPARINGLY — document why in commit / PR body."
+            "REQUIRES safety-phrase confirmation: the operator must type "
+            "'AGREE TO SHALLOW SUBSECTIONS' interactively, OR set env var "
+            "SKILL_PLAN_TO_PROJECT_SHALLOW_SUBSECTIONS_CONFIRM to the same "
+            "exact phrase for non-interactive runs. Use SPARINGLY — document "
+            "why in commit / PR body."
         ),
     )
     p_create.add_argument(
@@ -3210,7 +3324,11 @@ def main() -> None:
         help=(
             "FR #45: bypass the required-subsection gate. Default: fail-fast "
             "when plan items lack per-level required subsections. "
-            "Document why you used this flag in the commit / PR body."
+            "REQUIRES safety-phrase confirmation: the operator must type "
+            "'AGREE TO SHALLOW SUBSECTIONS' interactively, OR set env var "
+            "SKILL_PLAN_TO_PROJECT_SHALLOW_SUBSECTIONS_CONFIRM to the same "
+            "exact phrase for non-interactive runs. Document why you used "
+            "this flag in the commit / PR body."
         ),
     )
 
@@ -3268,7 +3386,11 @@ def main() -> None:
         help=(
             "FR #45: bypass the required-subsection gate. Default: fail-fast "
             "when plan items lack per-level required subsections. "
-            "Document why you used this flag in the commit / PR body."
+            "REQUIRES safety-phrase confirmation: the operator must type "
+            "'AGREE TO SHALLOW SUBSECTIONS' interactively, OR set env var "
+            "SKILL_PLAN_TO_PROJECT_SHALLOW_SUBSECTIONS_CONFIRM to the same "
+            "exact phrase for non-interactive runs. Document why you used "
+            "this flag in the commit / PR body."
         ),
     )
     p_amend.add_argument(
