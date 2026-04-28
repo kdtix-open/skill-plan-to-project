@@ -1308,6 +1308,7 @@ def _bullets_to_deps_table_rows(bulleted_content: str) -> str:
     for line in lines:
         if not line.strip():
             continue
+        line = line.lstrip()  # handle indented bullets (e.g. "  - #184 — …")
         m_ref = _DEPS_BULLET_WITH_REF_RE.match(line)
         if m_ref:
             # Pattern: ``- #NNNN — description (Status)``
@@ -1336,12 +1337,14 @@ def _resolve_deps_block(deps: str | list | None) -> str | None:
 
     - ``deps`` is ``None`` or falsy → returns ``None`` (caller should elide the section).
     - ``deps`` is a ``list`` → uses ``_bullet_lines`` (legacy list path).
-    - ``deps`` is a ``str`` starting with a bullet marker → converts via
-      ``_bullets_to_deps_table_rows``, then strips the table header via
-      ``_normalize_table_subsection_content`` (so only data rows remain for
-      substitution into a template that already carries the header row).
-    - ``deps`` is a ``str`` starting with ``|`` (markdown table) → strips the
-      table header via ``_normalize_table_subsection_content`` (existing path).
+    - ``deps`` is a ``str`` whose **first non-blank line** starts with a bullet
+      marker (``-`` or ``*``) → converts via ``_bullets_to_deps_table_rows``,
+      then strips the table header via ``_normalize_table_subsection_content``
+      (so only data rows remain for substitution into a template that already
+      carries the header row).
+    - ``deps`` is a ``str`` whose **first non-blank line** starts with ``|``
+      (markdown table) → strips the table header via
+      ``_normalize_table_subsection_content`` (existing path).
     """
     if not deps:
         return None

@@ -3122,11 +3122,11 @@ class TestIssue64DepsBulletsToTable:
         assert "| (none) | Blocks: none | — |" in deps
 
     def test_dependencies_bulleted_handles_em_dash_and_hyphens(self):
-        """Both em-dash (—) and hyphen (-) separators between issue ref and
-        description are parsed correctly in the renderer path."""
+        """Em-dash (—), en-dash (–), and hyphen (-) separators between issue ref
+        and description are parsed correctly in the renderer path."""
         from scripts import create_issues
 
-        for sep in ["—", "-"]:
+        for sep in ["—", "–", "-"]:
             subs = create_issues._parse_subsections(
                 f"#### Dependencies\n\n- #99 {sep} Some Dep (Open)\n",
                 "story",
@@ -3162,6 +3162,34 @@ class TestIssue64DepsBulletsToTable:
         # Data rows must appear
         assert "| #207 | Access-token renewal | Open |" in deps
         assert "| #213 | Revocation handling | Open |" in deps
+
+    def test_dependencies_mixed_bullets_and_table(self):
+        """When a Dependencies block contains BOTH bullets and table rows,
+        the first non-blank line wins. This codifies the documented behavior so
+        future changes don't silently drift."""
+        from scripts import create_issues
+
+        # Bullet-first → goes through bullet path; table rows are silently dropped
+        bullet_first = "- #42 — First dep (Done)\n| #207 | Table row | Open |"
+        result = create_issues._bullets_to_deps_table_rows(bullet_first)
+        assert "| #42 | First dep | Done |" in result
+        # Table row dropped — this is the documented "first non-blank wins" behavior
+
+        # Table-first → returned unchanged via fast-path
+        table_first = "| Ticket | Description | Status |\n|--------|-------------|--------|\n| #207 | Real dep | Open |\n- #42 — Bullet ignored"
+        result = create_issues._bullets_to_deps_table_rows(table_first)
+        assert result == table_first  # Idempotent fast-path
+
+    def test_dependencies_bulleted_indented_bullets_handled(self):
+        """Indented bullets (e.g. '  - #184 — desc') should still parse
+        correctly. Common in operator markdown where Dependencies appears
+        inside a nested list."""
+        from scripts import create_issues
+
+        indented = "  - #184 — Parent Epic (In Progress)\n  - #267 — Sibling story (Open)"
+        result = create_issues._bullets_to_deps_table_rows(indented)
+        assert "| #184 | Parent Epic | In Progress |" in result
+        assert "| #267 | Sibling story | Open |" in result
 
 
 class TestRenderTaskSubsections:

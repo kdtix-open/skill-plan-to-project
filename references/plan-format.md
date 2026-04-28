@@ -201,6 +201,16 @@ Use the **table form** for new plans — it is the canonical format and makes th
 column schema explicit. The bullet form is accepted for backward compatibility
 with plans authored before the table convention was adopted.
 
+**Dependencies bullet format — single-line per entry.** Multi-line continuation
+(e.g. wrapping a long description across two lines via leading whitespace) is
+NOT supported by the bullet → table converter. Each bullet must be on a single
+physical line. Multi-line content silently drops the continuation line. Use
+the markdown table format if you need multi-line description content.
+
+Bullets with an issue ref but empty description (e.g. `- #42 —`) produce a row
+with an empty Description cell. Avoid degenerate inputs; the helper does not
+warn.
+
 ### Full example
 
 ```markdown
