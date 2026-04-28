@@ -151,6 +151,11 @@ Reads the markdown plan and extracts the 5-level hierarchy (Scope → Initiative
 Epics → Stories → Tasks) with title, description, priority, size, parent reference,
 and blocking relationships. Prints a summary for review.
 
+> **For backlogs spanning multiple Epics × multiple Stories per Epic**, see
+> [references/sub-agent-fan-out-pattern.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/sub-agent-fan-out-pattern.md)
+> for the proven per-layer sub-agent orchestration pattern. Single-agent
+> runs against backlogs exceeding 1 Epic × 5 Stories per Epic hit context limits and timeouts.
+
 ### Phase 3 — Create issues (top-down)
 
 ```bash
@@ -486,3 +491,4 @@ rationale. Key choices:
 - [gh-cli-patterns.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/gh-cli-patterns.md) — Reliable `gh` CLI invocation patterns
 - [compliance-rules.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/compliance-rules.md) — P0/P1/P2 gap definitions and auto-fix rules
 - [design-decisions.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/design-decisions.md) — Full design rationale
+- [sub-agent-fan-out-pattern.md](https://github.com/kdtix-open/skill-plan-to-project/blob/main/references/sub-agent-fan-out-pattern.md) — Per-Epic sub-agent fan-out pattern for large backlogs
