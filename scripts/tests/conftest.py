@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
 import textwrap
 from unittest.mock import MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Safety-phrase env var: tests that exercise --allow-shallow-subsections

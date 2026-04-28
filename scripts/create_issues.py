@@ -2235,15 +2235,20 @@ def _confirm_allow_shallow_subsections_safety_phrase() -> None:
 
     if not sys.stdin.isatty():
         print(
-            f"\n[subsection-schema] FAIL: --allow-shallow-subsections requires explicit\n"
-            f"  operator confirmation. This run has no TTY (e.g. CI / piped stdin),\n"
+            f"\n[subsection-schema] FAIL: --allow-shallow-subsections requires "
+            f"explicit\n"
+            f"  operator confirmation. This run has no TTY (e.g. CI / piped "
+            f"stdin),\n"
             f"  so the interactive prompt cannot be shown.\n"
             f"  Either:\n"
-            f"    (a) Run interactively in a terminal so you can type the safety phrase, OR\n"
+            f"    (a) Run interactively in a terminal so you can type the "
+            f"safety phrase, OR\n"
             f"    (b) Set env var {env_var_name} to the exact phrase:\n"
             f"          {env_var_name}='{expected}'\n"
-            f"  This guard exists because shallow-bypass produced 30+ empty-template\n"
-            f"  issue bodies under PS-182 in 2026-04. Don't disable it without the\n"
+            f"  This guard exists because shallow-bypass produced 30+ "
+            f"empty-template\n"
+            f"  issue bodies under PS-182 in 2026-04. Don't disable it without "
+            f"the\n"
             f"  safety phrase.",
             file=sys.stderr,
         )
@@ -2259,7 +2264,11 @@ def _confirm_allow_shallow_subsections_safety_phrase() -> None:
         file=sys.stderr,
     )
     try:
-        response = input("> ").strip()
+        # NOTE: do NOT call .strip() here — exact match means exact match.
+        # If the operator types trailing whitespace, that's a near-miss and
+        # we want to make them retype it cleanly. Same rule applies to the
+        # env-var check above (no .strip() there either).
+        response = input("> ")
     except (EOFError, KeyboardInterrupt):
         print(
             "\n[subsection-schema] FAIL: confirmation cancelled. Aborting.",
