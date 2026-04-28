@@ -118,13 +118,20 @@ class TestGenerateBody:
         assert "As a" in body
         assert "So that" in body
 
-    def test_story_body_has_moscow(self):
+    def test_story_body_has_moscow_when_plan_provides_content(self):
+        """MoSCoW section appears when the plan has MoSCoW content; it is elided
+        when absent (S5 fix: consistent with Dependencies/Constraints elide)."""
+        subs = create_issues._parse_subsections(
+            "#### MoSCoW Classification\n\n- **Must Have**:\n  - Core feature\n",
+            "story",
+        )
         item = {
             "title": "Build it",
             "description": "",
             "priority": "P1",
             "size": "S",
             "parent_ref": "Some Epic",
+            "subsections": subs,
         }
         body = create_issues.generate_body(item, "story")
         assert "MoSCoW" in body

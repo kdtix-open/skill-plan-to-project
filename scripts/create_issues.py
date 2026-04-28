@@ -317,6 +317,7 @@ SUBSECTION_HEADINGS: dict[str, dict[str, list[str]]] = {
             "dependencies",
             "preconditions",
             "cross-issue references",
+            "cross issue references",
         ],
         "done_when": [
             "i know i am done when",
@@ -467,6 +468,11 @@ def _parse_subsections(body: str, level: str) -> dict[str, Any]:
                 else:
                     diagrams_list.append(normalized)
             else:
+                # NOTE: if the same canonical key appears twice in the plan
+                # body (e.g. both `### Dependencies` and `### Preconditions`
+                # are present), the second occurrence silently overwrites the
+                # first.  Precedence = last-seen wins.  Avoid combining both
+                # in the same item body; use a single canonical heading instead.
                 result[current_key] = normalized
         current_key = None
         current_lines = []
@@ -1278,6 +1284,13 @@ def _elide_template_section(rendered: str, section_heading: str) -> str:
     consumed so the surrounding sections don't acquire extra vertical whitespace.
 
     Returns `rendered` unchanged when `section_heading` is not present.
+
+    NOTE: This function assumes substantial content precedes the section heading
+    in `rendered` (i.e. the heading appears after at least one newline).  If
+    reused on a rendered sub-string where the section heading is at position 0
+    (no preceding content), the leading-newline anchor in the regex will not
+    match and the section will NOT be elided.  Always pass the full rendered
+    template body, not a sub-string starting at the heading.
     """
     # Build a regex that matches optional preceding blank lines + the heading line
     # + any content up to the next same-or-higher-level heading, HR, or EOS.
@@ -1287,7 +1300,8 @@ def _elide_template_section(rendered: str, section_heading: str) -> str:
     level_match = re.match(r"^(#{1,6})\s", section_heading)
     hashes = level_match.group(1) if level_match else "###"
     # Stop at: next heading with same or fewer `#` chars, a `---` HR, or EOS.
-    stop_pattern = r"(?=\n" + re.escape(hashes[:1]) + r"{1," + str(len(hashes)) + r"}[^#]|\n---|\Z)"
+    # Note: `#` is not a regex special character so re.escape is unnecessary here.
+    stop_pattern = r"(?=\n" + hashes[:1] + r"{1," + str(len(hashes)) + r"}[^#]|\n---|\Z)"
     pattern = re.compile(
         r"\n*\n" + re.escape(hashes) + r"\s+" + escaped + r".*?" + stop_pattern,
         re.DOTALL,
@@ -1384,7 +1398,13 @@ def _fill_diagrams_hook(rendered: str, subs: dict[str, Any], level: str) -> str:
 
 
 def _moscow_table_rows(moscow: dict[str, list[str]]) -> str:
-    """Render MoSCoW groups as table rows.  Empty groups keep placeholder."""
+    """Render MoSCoW groups as table rows.
+
+    Groups with items are expanded one-row-per-item.  Groups that are
+    explicitly present in the dict but carry no items render as
+    ``_(none)_`` rather than a residual ``[ITEM]`` placeholder.
+    Groups not present in the dict at all are omitted from the output.
+    """
     rows: list[str] = []
     group_order = [
         ("must_have", "Must Have"),
@@ -1393,9 +1413,12 @@ def _moscow_table_rows(moscow: dict[str, list[str]]) -> str:
         ("wont_have", "Won't Have"),
     ]
     for key, label in group_order:
+        if key not in moscow:
+            # Group not mentioned in the plan at all — skip the row entirely.
+            continue
         items = moscow.get(key) or []
         if not items:
-            rows.append(f"| {label} | [ITEM] |")
+            rows.append(f"| {label} | _(none)_ |")
         else:
             for item in items:
                 rows.append(f"| {label} | {item} |")
@@ -1679,7 +1702,8 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
         )
         rendered = _replace_block(rendered, old_block, _bullet_lines(assumptions))
 
-    # MoSCoW
+    # MoSCoW — fill when present, elide when absent (consistent with
+    # Dependencies and Constraints; avoids leaking [ITEM] placeholders).
     moscow = subs.get("moscow") or {}
     if isinstance(moscow, dict) and moscow:
         old_rows = (
@@ -1689,6 +1713,10 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
             "| Won't Have | [ITEM] |"
         )
         rendered = _replace_block(rendered, old_rows, _moscow_table_rows(moscow))
+    else:
+        # No MoSCoW content in plan source → drop the whole section so
+        # Workers/Reviewers don't see misleading [ITEM] placeholder rows.
+        rendered = _elide_template_section(rendered, "### MoSCoW Classification")
 
     # Dependencies — fill when present, elide when absent.
     deps = subs.get("dependencies")
@@ -1698,9 +1726,15 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
             if isinstance(deps, str)
             else _bullet_lines(deps)
         )
+        # NOTE: By the time _fill_story_subsections runs, _render_template has
+        # already applied global substitutions, so the original template row
+        # "| #[N] | [DESCRIPTION] | [STATUS] |" no longer exists in `rendered`.
+        # [DESCRIPTION] → "_(child linkage populated after creation)_"
+        # [STATUS]      → "Backlog"
+        # We must match the post-substitution string instead.
         rendered = _replace_block(
             rendered,
-            "| #[N] | [DESCRIPTION] | [STATUS] |",
+            "| #[N] | _(child linkage populated after creation)_ | Backlog |",
             deps_block,
         )
     else:
