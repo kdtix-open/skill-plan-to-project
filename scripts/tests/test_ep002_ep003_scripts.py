@@ -2591,6 +2591,380 @@ class TestRenderStorySubsections:
         assert "- Must ship before Q2" in body
 
 
+class TestIssue60RendererGapFixes:
+    """Regression tests for issue #60: renderer-vs-source content gap.
+
+    Three distinct fixes are covered:
+    1. MoSCoW parser recognises the bullet-prefixed ``- **Must Have**:`` format.
+    2. Dependencies section is elided (not `_TBD_`) when absent from plan source.
+    3. Constraints section is elided when absent from plan source.
+    4. Subtasks Needed section is elided when absent from plan source.
+    5. Dependencies section is preserved when plan source carries content.
+    6. Heading aliases ``### Preconditions`` → dependencies,
+       ``### Hard Constraints`` / ``### License Zone Constraints`` → constraints.
+    """
+
+    def _story_item(self, body: str) -> dict:
+        from scripts import create_issues
+
+        return {
+            "title": "Test story",
+            "description": body,
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": create_issues._parse_subsections(body, "story"),
+        }
+
+    # ------------------------------------------------------------------
+    # 1. MoSCoW — bulleted format (``- **Must Have**:``) parsed correctly
+    # ------------------------------------------------------------------
+
+    def test_bulleted_moscow_parses_into_table_cells(self):
+        """Bulleted ``- **Must Have**:`` format must populate the MoSCoW table."""
+        from scripts import create_issues
+
+        plan = (
+            "#### MoSCoW Classification\n\n"
+            "- **Must Have**:\n"
+            "  - Rotation matrix for N providers\n"
+            "  - Strict pair exclusion (worker != reviewer)\n"
+            "- **Should Have**:\n"
+            "  - Integration test\n"
+            "- **Could Have**:\n"
+            "  - Configurable concurrency\n"
+            "- **Won't Have**:\n"
+            "  - Terminal result upload (Story #195)\n"
+        )
+        item = self._story_item(plan)
+        body = create_issues.generate_body(item, "story")
+
+        # Placeholder rows must be gone
+        assert "| Must Have | [ITEM] |" not in body
+        assert "| Should Have | [ITEM] |" not in body
+        assert "| Could Have | [ITEM] |" not in body
+        assert "| Won't Have | [ITEM] |" not in body
+
+        # Actual content must be present
+        assert "| Must Have | Rotation matrix for N providers |" in body
+        assert "| Must Have | Strict pair exclusion (worker != reviewer) |" in body
+        assert "| Should Have | Integration test |" in body
+        assert "| Could Have | Configurable concurrency |" in body
+        assert "| Won't Have | Terminal result upload (Story #195) |" in body
+
+    def test_bulleted_moscow_parse_subsections_returns_dict(self):
+        """_parse_subsections with bulleted MoSCoW returns the nested dict."""
+        from scripts import create_issues
+
+        plan = (
+            "#### MoSCoW Classification\n\n"
+            "- **Must Have**:\n"
+            "  - Item A\n"
+            "- **Should Have**:\n"
+            "  - Item B\n"
+            "- **Could Have**:\n"
+            "  - Item C\n"
+            "- **Won't Have**:\n"
+            "  - Item D\n"
+        )
+        subs = create_issues._parse_subsections(plan, "story")
+        moscow = subs.get("moscow")
+        assert isinstance(moscow, dict), f"Expected dict, got {type(moscow)}"
+        assert moscow.get("must_have") == ["Item A"]
+        assert moscow.get("should_have") == ["Item B"]
+        assert moscow.get("could_have") == ["Item C"]
+        assert moscow.get("wont_have") == ["Item D"]
+
+    # ------------------------------------------------------------------
+    # 2. Dependencies — elide when absent, preserve when present
+    # ------------------------------------------------------------------
+
+    def test_dependencies_section_elided_when_absent_from_plan(self):
+        """When plan carries no dependency content, the entire ### Dependencies
+        section must be absent from the rendered body (not rendered as _TBD_)."""
+        from scripts import create_issues
+
+        item = self._story_item(
+            "#### Why This Matters\nThis feature is critical.\n"
+        )
+        body = create_issues.generate_body(item, "story")
+        assert "### Dependencies" not in body, (
+            "Dependencies section should be elided when plan has no dep content"
+        )
+
+    def test_dependencies_section_present_when_plan_has_content(self):
+        """When plan carries a ### Dependencies subsection, the rendered body
+        must include it with the parsed content IN THE DEPENDENCIES SECTION.
+
+        Regression for the fill-when-present bug: the original test was a
+        false-green because it used _story_item() which passes the plan body as
+        item['description'], causing the raw plan text (including the #204 line)
+        to appear in the TL;DR section rather than the ### Dependencies table.
+        Both assertions passed vacuously even when _replace_block was a no-op.
+
+        This corrected test builds the item directly from _parse_subsections so
+        the content is only in subsections['dependencies'], then asserts the
+        content appears inside the ### Dependencies block specifically.
+        """
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Dependencies\n\n- #204 OidcProviderConfig must be merged\n",
+            "story",
+        )
+        item = {
+            "title": "Test story",
+            "description": "One-line story summary.",
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": subs,
+        }
+        body = create_issues.generate_body(item, "story")
+        assert "### Dependencies" in body
+        deps_start = body.find("### Dependencies")
+        next_section = body.find("\n### ", deps_start + 1)
+        deps_block = body[deps_start:next_section] if next_section >= 0 else body[deps_start:]
+        assert "#204 OidcProviderConfig must be merged" in deps_block
+
+    def test_preconditions_heading_parsed_as_dependencies(self):
+        """``### Preconditions`` is a recognised alias for the dependencies
+        subsection (issue #60 stretch goal)."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Preconditions\n\n- #204 merged\n- #207 merged\n", "story"
+        )
+        deps = subs.get("dependencies")
+        assert deps, "Preconditions should be parsed as dependencies"
+
+    # ------------------------------------------------------------------
+    # 3. Constraints — elide when absent, preserve when present
+    # ------------------------------------------------------------------
+
+    def test_constraints_section_elided_when_absent_from_plan(self):
+        """When plan carries no constraint content, the entire ### Constraints
+        section must be absent from the rendered body."""
+        from scripts import create_issues
+
+        item = self._story_item(
+            "#### Why This Matters\nThis feature is needed.\n"
+        )
+        body = create_issues.generate_body(item, "story")
+        assert "### Constraints" not in body, (
+            "Constraints section should be elided when plan has no constraint content"
+        )
+
+    def test_constraints_section_present_when_plan_has_content(self):
+        """When plan carries a ### Constraints subsection, the rendered body
+        must include it with the parsed bullets IN THE CONSTRAINTS SECTION."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Constraints\n- Must not break existing auth\n- JWT TTL ≤ 1hr\n",
+            "story",
+        )
+        item = {
+            "title": "Test story",
+            "description": "One-line story summary.",
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": subs,
+        }
+        body = create_issues.generate_body(item, "story")
+        assert "### Constraints" in body
+        c_start = body.find("### Constraints")
+        next_section = body.find("\n### ", c_start + 1)
+        constraints_block = body[c_start:next_section] if next_section >= 0 else body[c_start:]
+        assert "- Must not break existing auth" in constraints_block
+
+    def test_hard_constraints_heading_parsed_as_constraints(self):
+        """``### Hard Constraints`` is a recognised alias for the constraints
+        subsection (issue #60 stretch goal)."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Hard Constraints\n\n- No breaking API changes\n", "story"
+        )
+        constraints = subs.get("constraints")
+        assert constraints, "Hard Constraints should be parsed as constraints"
+        assert "No breaking API changes" in constraints
+
+    # ------------------------------------------------------------------
+    # 4. Subtasks Needed — elide when absent
+    # ------------------------------------------------------------------
+
+    def test_subtasks_needed_section_elided_when_absent_from_plan(self):
+        """When plan carries no subtask content, the entire ### Subtasks Needed
+        section must be absent from the rendered body."""
+        from scripts import create_issues
+
+        item = self._story_item(
+            "#### Why This Matters\nCritical path item.\n"
+        )
+        body = create_issues.generate_body(item, "story")
+        assert "### Subtasks Needed" not in body, (
+            "Subtasks Needed section should be elided when plan has no subtask content"
+        )
+
+    # ------------------------------------------------------------------
+    # 5. MoSCoW — elide when absent, no residual [ITEM] placeholders
+    # ------------------------------------------------------------------
+
+    def test_moscow_section_elided_when_absent_from_plan(self):
+        """When plan carries no MoSCoW content, the entire ### MoSCoW section
+        must be absent from the rendered body (not rendered with [ITEM] rows)."""
+        from scripts import create_issues
+
+        item = {
+            "title": "Test story",
+            "description": "One-line story summary.",
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": {},
+        }
+        body = create_issues.generate_body(item, "story")
+        assert "### MoSCoW" not in body, (
+            "MoSCoW section should be elided when plan has no MoSCoW content"
+        )
+        assert "[ITEM]" not in body, (
+            "No [ITEM] placeholders should remain when MoSCoW is absent"
+        )
+
+    def test_moscow_section_present_when_plan_has_content(self):
+        """When plan carries a MoSCoW subsection, the rendered body must include
+        it with the parsed content IN THE MOSCOW SECTION."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### MoSCoW Classification\n\n- **Must Have**:\n  - First requirement\n",
+            "story",
+        )
+        item = {
+            "title": "Test story",
+            "description": "One-line story summary.",
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": subs,
+        }
+        body = create_issues.generate_body(item, "story")
+        assert "### MoSCoW" in body
+        moscow_start = body.find("### MoSCoW")
+        next_section = body.find("\n### ", moscow_start + 1)
+        moscow_block = (
+            body[moscow_start:next_section] if next_section >= 0 else body[moscow_start:]
+        )
+        assert "First requirement" in moscow_block, (
+            "MoSCoW content must be in the MoSCoW section, not leaked into TL;DR"
+        )
+        assert "[ITEM]" not in moscow_block, (
+            "No residual [ITEM] placeholder should remain in the MoSCoW section"
+        )
+
+    # ------------------------------------------------------------------
+    # T1: empty MoSCoW group — no residual [ITEM] placeholder
+    # ------------------------------------------------------------------
+
+    def test_moscow_empty_group_shows_none_marker(self):
+        """When a MoSCoW group is explicitly present but has no sub-items,
+        the rendered row must NOT show a residual [ITEM] placeholder.
+        The row should show _(none)_ instead."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### MoSCoW Classification\n\n"
+            "- **Must Have**:\n  - Auth token rotation\n"
+            "- **Should Have**:\n"  # empty — no sub-bullets
+            "- **Could Have**:\n  - Nice to have\n"
+            "- **Won't Have**:\n",  # empty — no sub-bullets
+            "story",
+        )
+        item = {
+            "title": "Test story",
+            "description": "One-line story summary.",
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": subs,
+        }
+        body = create_issues.generate_body(item, "story")
+        moscow_start = body.find("### MoSCoW")
+        next_section = body.find("\n### ", moscow_start + 1)
+        moscow_block = (
+            body[moscow_start:next_section] if next_section >= 0 else body[moscow_start:]
+        )
+        assert "| Should Have | [ITEM] |" not in moscow_block, (
+            "Empty Should Have group must not render residual [ITEM] placeholder"
+        )
+        assert "| Won't Have | [ITEM] |" not in moscow_block, (
+            "Empty Won't Have group must not render residual [ITEM] placeholder"
+        )
+        # Groups with content should still appear
+        assert "| Must Have | Auth token rotation |" in moscow_block
+        assert "| Could Have | Nice to have |" in moscow_block
+
+    # ------------------------------------------------------------------
+    # T3: License Zone Constraints alias
+    # ------------------------------------------------------------------
+
+    def test_license_zone_constraints_heading_parsed_as_constraints(self):
+        """``### License Zone Constraints`` is a recognised alias for the
+        constraints subsection (issue #60 stretch goal, parallel to
+        test_hard_constraints_heading_parsed_as_constraints)."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### License Zone Constraints\n\n- BSL code must not cross MIT boundary\n",
+            "story",
+        )
+        constraints = subs.get("constraints")
+        assert constraints, "License Zone Constraints should be parsed as constraints"
+        assert "BSL code must not cross MIT boundary" in constraints
+
+    # ------------------------------------------------------------------
+    # S2: cross issue references (no-hyphen) alias
+    # ------------------------------------------------------------------
+
+    def test_cross_issue_references_no_hyphen_alias_parsed_as_dependencies(self):
+        """``#### Cross Issue References`` (no hyphen) must be a recognised alias
+        for dependencies alongside ``cross-issue references`` (hyphenated)."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Cross Issue References\n\n- #204 merged\n- #207 merged\n",
+            "story",
+        )
+        deps = subs.get("dependencies")
+        assert deps, "Cross Issue References (no-hyphen) should be parsed as dependencies"
+
+    # ------------------------------------------------------------------
+    # T4: _elide_template_section stops at --- HR boundary
+    # ------------------------------------------------------------------
+
+    def test_elide_constraints_preserves_hr_and_engineering_section(self):
+        """Eliding the ### Constraints section must not consume the trailing
+        `---` horizontal rule or the ## ENGINEERING SECTION heading."""
+        from scripts import create_issues
+
+        item = {
+            "title": "Test story",
+            "description": "One-line story summary.",
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": {},
+        }
+        body = create_issues.generate_body(item, "story")
+        # ### Constraints is elided when no content
+        assert "### Constraints" not in body
+        # But the HR separator and ENGINEERING SECTION must survive
+        assert "---" in body
+        assert "## ENGINEERING SECTION" in body
+
+
 class TestRenderTaskSubsections:
     def _task_item(self, body: str) -> dict:
         from scripts import create_issues

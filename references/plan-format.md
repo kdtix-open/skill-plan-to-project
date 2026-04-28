@@ -116,6 +116,9 @@ placeholders remain as template text (the P0-4 scanner flags them).
 
 ### MoSCoW format
 
+Two equivalent forms are accepted:
+
+**Bare form** (original):
 ```
 #### MoSCoW
 
@@ -132,6 +135,27 @@ placeholders remain as template text (the P0-4 scanner flags them).
 **Won't Have**:
 - Item E
 ```
+
+**Bullet-prefixed form** (recommended for indentation hygiene):
+```
+#### MoSCoW Classification
+
+- **Must Have**:
+  - Item A
+  - Item B
+
+- **Should Have**:
+  - Item C
+
+- **Could Have**:
+  - Item D
+
+- **Won't Have**:
+  - Item E
+```
+
+Both forms are parsed identically. Use the bullet-prefixed form when writing
+plans in editors that reformat indented lists — it avoids accidental un-nesting.
 
 Each `**Group**:` line starts a new bullet group. Recognized group names:
 `Must Have`, `Should Have`, `Could Have`, `Won't Have` (or `Wont Have`).
