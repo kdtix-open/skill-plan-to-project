@@ -13,6 +13,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - A documented release playbook for versioning, tagging, and publishing production-style releases.
 
 ### Fixed
+- Renderer auto-converts bulleted `#### Dependencies` plan source to table rows so legacy bullet-format authoring renders cleanly. Closes #64.
 - Renderer no longer leaks `_TBD_` placeholders in Dependencies / Constraints / Subtasks Needed sections when plan source lacks the corresponding subsection (#60). Bulleted `- **Must Have**:` MoSCoW format now correctly populates table cells. Fill-when-present path corrected for Dependencies / Constraints / MoSCoW.
 - MoSCoW section is now elided (like Dependencies and Constraints) when plan source carries no MoSCoW content, preventing residual `[ITEM]` placeholders from leaking into rendered issue bodies.
 - Empty MoSCoW groups (explicitly present but with no sub-items) now render as `_(none)_` instead of a residual `[ITEM]` placeholder.

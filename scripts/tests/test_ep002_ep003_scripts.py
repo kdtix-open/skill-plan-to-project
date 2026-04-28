@@ -2965,6 +2965,205 @@ class TestIssue60RendererGapFixes:
         assert "## ENGINEERING SECTION" in body
 
 
+class TestIssue64DepsBulletsToTable:
+    """Tests for issue #64: auto-convert bulleted Dependencies source to table rows.
+
+    Covers the ``_bullets_to_deps_table_rows`` helper and its wiring into
+    ``_fill_story_subsections`` via ``_resolve_deps_block``.
+    """
+
+    def _story_item_from_subs(self, subs: dict) -> dict:
+        return {
+            "title": "Test story",
+            "description": "One-line story summary.",
+            "priority": "P1",
+            "size": "M",
+            "parent_ref": "Test epic",
+            "subsections": subs,
+        }
+
+    def _deps_section(self, body: str) -> str:
+        """Extract the ### Dependencies block from a rendered story body."""
+        deps_start = body.find("### Dependencies")
+        assert deps_start >= 0, "### Dependencies section not found in body"
+        next_section = body.find("\n### ", deps_start + 1)
+        return body[deps_start:next_section] if next_section >= 0 else body[deps_start:]
+
+    # ------------------------------------------------------------------
+    # 1. Helper unit tests (_bullets_to_deps_table_rows)
+    # ------------------------------------------------------------------
+
+    def test_helper_converts_issue_ref_bullet(self):
+        """``- #184 — Description (Status)`` → table row with ticket, description, status."""
+        from scripts import create_issues
+
+        result = create_issues._bullets_to_deps_table_rows(
+            "- #184 — Parent Epic (In Progress)"
+        )
+        assert "| #184 | Parent Epic | In Progress |" in result
+        assert "| Ticket | Description | Status |" in result
+
+    def test_helper_converts_plain_bullet(self):
+        """``- plain text`` with no issue ref → row with (none) ticket and — status."""
+        from scripts import create_issues
+
+        result = create_issues._bullets_to_deps_table_rows("- Blocks: none")
+        assert "| (none) | Blocks: none | — |" in result
+
+    def test_helper_plain_bullet_preserves_parentheticals_in_description(self):
+        """Parentheticals inside plain bullets stay in the description column."""
+        from scripts import create_issues
+
+        result = create_issues._bullets_to_deps_table_rows(
+            "- Blocks: none (operator-side workaround exists)"
+        )
+        assert "| (none) | Blocks: none (operator-side workaround exists) | — |" in result
+
+    def test_helper_idempotent_on_table_input(self):
+        """Applying the helper twice gives the same result as applying it once."""
+        from scripts import create_issues
+
+        raw = "- #184 — Parent Epic (In Progress)\n- Blocks: none"
+        once = create_issues._bullets_to_deps_table_rows(raw)
+        twice = create_issues._bullets_to_deps_table_rows(once)
+        assert once == twice
+
+    def test_helper_table_source_returned_unchanged(self):
+        """When input is already a markdown table, the helper returns it unchanged."""
+        from scripts import create_issues
+
+        table = (
+            "| Ticket | Description | Status |\n"
+            "|--------|-------------|--------|\n"
+            "| #207 | Some dep | Open |"
+        )
+        result = create_issues._bullets_to_deps_table_rows(table)
+        assert result == table
+
+    def test_helper_em_dash_and_en_dash_and_hyphen_separators(self):
+        """Both em-dash (—), en-dash (–), and hyphen (-) work as separators."""
+        from scripts import create_issues
+
+        for sep in ["—", "–", "-"]:
+            line = f"- #42 {sep} Some description (Done)"
+            result = create_issues._bullets_to_deps_table_rows(line)
+            assert "| #42 | Some description | Done |" in result, (
+                f"Failed for separator: {sep!r}"
+            )
+
+    def test_helper_star_bullet_marker(self):
+        """Bullet marker ``*`` is also recognised."""
+        from scripts import create_issues
+
+        result = create_issues._bullets_to_deps_table_rows("* Blocked by: none")
+        assert "| (none) | Blocked by: none | — |" in result
+
+    # ------------------------------------------------------------------
+    # 2. Integration tests via generate_body (end-to-end renderer path)
+    # ------------------------------------------------------------------
+
+    def test_bulleted_source_renders_as_table_no_orphan_header(self):
+        """Bulleted deps plan source must render as a clean table with no orphan
+        header row followed by bullets — the exact artifact reported in #64."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Dependencies\n\n"
+            "- #184 — Parent Epic \"Phase 1 Verification Harness\" (In Progress)\n"
+            "- Blocks: none (operator-side workaround exists)\n"
+            "- Blocked by: none\n",
+            "story",
+        )
+        item = self._story_item_from_subs(subs)
+        body = create_issues.generate_body(item, "story")
+
+        deps = self._deps_section(body)
+
+        # Table header must appear exactly once — not duplicated
+        assert deps.count("| Ticket | Description | Status |") == 1
+
+        # Raw bullets must not appear in the rendered output
+        assert "- #184" not in deps
+        assert "- Blocks:" not in deps
+        assert "- Blocked by:" not in deps
+
+        # Each bullet must appear as a table row
+        assert "| #184 | Parent Epic" in deps
+        assert "In Progress" in deps
+        assert "| (none) | Blocks: none (operator-side workaround exists) | — |" in deps
+        assert "| (none) | Blocked by: none | — |" in deps
+
+    def test_dependencies_bulleted_with_issue_refs(self):
+        """Input ``- #184 — Parent Epic (In Progress)`` renders to the correct table row."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Dependencies\n\n- #184 — Parent Epic (In Progress)\n",
+            "story",
+        )
+        item = self._story_item_from_subs(subs)
+        body = create_issues.generate_body(item, "story")
+
+        deps = self._deps_section(body)
+        assert "| #184 | Parent Epic | In Progress |" in deps
+
+    def test_dependencies_bulleted_without_issue_refs(self):
+        """Input ``- Blocks: none`` renders to a row with (none) ticket and — status."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Dependencies\n\n- Blocks: none\n",
+            "story",
+        )
+        item = self._story_item_from_subs(subs)
+        body = create_issues.generate_body(item, "story")
+
+        deps = self._deps_section(body)
+        assert "| (none) | Blocks: none | — |" in deps
+
+    def test_dependencies_bulleted_handles_em_dash_and_hyphens(self):
+        """Both em-dash (—) and hyphen (-) separators between issue ref and
+        description are parsed correctly in the renderer path."""
+        from scripts import create_issues
+
+        for sep in ["—", "-"]:
+            subs = create_issues._parse_subsections(
+                f"#### Dependencies\n\n- #99 {sep} Some Dep (Open)\n",
+                "story",
+            )
+            item = self._story_item_from_subs(subs)
+            body = create_issues.generate_body(item, "story")
+            deps = self._deps_section(body)
+            assert "| #99 | Some Dep | Open |" in deps, (
+                f"Separator {sep!r} not handled correctly"
+            )
+
+    def test_dependencies_table_source_unchanged_after_helper(self):
+        """Regression: markdown-table plan source still renders correctly after
+        the bullet-conversion helper is wired in — the table path is unchanged."""
+        from scripts import create_issues
+
+        subs = create_issues._parse_subsections(
+            "#### Dependencies\n\n"
+            "| Ticket | Description | Status |\n"
+            "|--------|-------------|--------|\n"
+            "| #207 | Access-token renewal | Open |\n"
+            "| #213 | Revocation handling | Open |\n",
+            "story",
+        )
+        item = self._story_item_from_subs(subs)
+        body = create_issues.generate_body(item, "story")
+
+        deps = self._deps_section(body)
+
+        # Header must appear exactly once
+        assert deps.count("| Ticket | Description | Status |") == 1
+
+        # Data rows must appear
+        assert "| #207 | Access-token renewal | Open |" in deps
+        assert "| #213 | Revocation handling | Open |" in deps
+
+
 class TestRenderTaskSubsections:
     def _task_item(self, body: str) -> dict:
         from scripts import create_issues

@@ -160,6 +160,47 @@ plans in editors that reformat indented lists — it avoids accidental un-nestin
 Each `**Group**:` line starts a new bullet group. Recognized group names:
 `Must Have`, `Should Have`, `Could Have`, `Won't Have` (or `Wont Have`).
 
+### Dependencies format (story level)
+
+The Story `#### Dependencies` subsection accepts two equivalent formats.
+
+**Table form** (recommended for new plans):
+```markdown
+#### Dependencies
+
+| Ticket | Description | Status |
+|--------|-------------|--------|
+| #207 | Access-token proactive renewal | Open |
+| #213 | Revocation invalidates active lease | Open |
+```
+
+**Bulleted form** (auto-converted; accepted for legacy / quick authoring):
+```markdown
+#### Dependencies
+
+- #184 — Parent Epic "Phase 1 Verification Harness" (In Progress)
+- Blocks: none (operator-side workaround exists)
+- Blocked by: none
+```
+
+The renderer auto-converts bulleted source to the table format before rendering.
+Two bullet patterns are supported:
+
+| Bullet pattern | Rendered table row |
+|---|---|
+| `- #NNNN — description (Status)` | `\| #NNNN \| description \| Status \|` |
+| `- plain text` | `\| (none) \| plain text \| — \|` |
+
+Parentheticals at the end of `- #NNNN — ...` lines are treated as the Status
+cell. Parentheticals inside plain-text bullets (no issue ref) remain in the
+Description cell. The separator between issue ref and description may be an
+em-dash (`—`), en-dash (`–`), or hyphen (`-`). Bullet markers `*` and `-` are
+both accepted.
+
+Use the **table form** for new plans — it is the canonical format and makes the
+column schema explicit. The bullet form is accepted for backward compatibility
+with plans authored before the table convention was adopted.
+
 ### Full example
 
 ```markdown
