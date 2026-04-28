@@ -1264,6 +1264,105 @@ def _normalize_table_subsection_content(raw: str) -> str:
     return raw
 
 
+# Matches bullets with an issue reference: ``- #NNNN — description (Status)``
+# Groups: (1) issue number, (2) description, (3) status (optional)
+_DEPS_BULLET_WITH_REF_RE = re.compile(
+    r"^[-*]\s+"
+    r"#(\d+)\s+[—–-]+\s+"   # issue ref: #NNNN — / #NNNN – / #NNNN -
+    r"(.*?)"                  # description (non-greedy)
+    r"(?:\s+\(([^)]+)\))?"    # optional trailing (status in parens)
+    r"\s*$"
+)
+
+# Matches plain bullets with no issue reference: ``- any text``
+# Group: (1) full text as description
+_DEPS_BULLET_PLAIN_RE = re.compile(r"^[-*]\s+(.+?)\s*$")
+
+_DEPS_TABLE_HEADER = "| Ticket | Description | Status |\n|--------|-------------|--------|"
+
+
+def _bullets_to_deps_table_rows(bulleted_content: str) -> str:
+    """Convert a bulleted Dependencies content block to a markdown table.
+
+    Accepts two bullet patterns per line:
+    - ``- #NNNN — description (Status)``  → ``| #NNNN | description | Status |``
+    - ``- plain text``                    → ``| (none) | plain text | — |``
+
+    Idempotent: if the first non-blank line already starts with ``|`` (i.e.
+    the content is already a markdown table), the input is returned unchanged.
+
+    Mixed format (bullets AND table in same source) is not guaranteed — the
+    first non-blank line wins: if it starts with ``|``, the whole block is
+    treated as a table; otherwise the whole block is treated as bullets.
+    """
+    lines = bulleted_content.splitlines()
+
+    # Fast-path: already a table — return as-is (idempotent + table-source guard)
+    for line in lines:
+        if line.strip():
+            if line.strip().startswith("|"):
+                return bulleted_content
+            break  # first non-blank is not a pipe → proceed with bullet parse
+
+    rows: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        line = line.lstrip()  # handle indented bullets (e.g. "  - #184 — …")
+        m_ref = _DEPS_BULLET_WITH_REF_RE.match(line)
+        if m_ref:
+            # Pattern: ``- #NNNN — description (Status)``
+            issue_num = m_ref.group(1)
+            description = (m_ref.group(2) or "").strip()
+            status = (m_ref.group(3) or "").strip()
+            ticket = f"#{issue_num}"
+            status_cell = status if status else "—"
+            rows.append(f"| {ticket} | {description} | {status_cell} |")
+            continue
+        m_plain = _DEPS_BULLET_PLAIN_RE.match(line)
+        if m_plain:
+            # Pattern: ``- plain text`` — whole text is description, no status
+            description = m_plain.group(1).strip()
+            rows.append(f"| (none) | {description} | — |")
+        # Non-matching lines (blank already filtered) are skipped
+
+    if not rows:
+        return bulleted_content  # nothing parsed → return raw to avoid data loss
+
+    return _DEPS_TABLE_HEADER + "\n" + "\n".join(rows)
+
+
+def _resolve_deps_block(deps: str | list | None) -> str | None:
+    """Return the formatted deps block to substitute into the rendered template.
+
+    - ``deps`` is ``None`` or falsy → returns ``None`` (caller should elide the section).
+    - ``deps`` is a ``list`` → uses ``_bullet_lines`` (legacy list path).
+    - ``deps`` is a ``str`` whose **first non-blank line** starts with a bullet
+      marker (``-`` or ``*``) → converts via ``_bullets_to_deps_table_rows``,
+      then strips the table header via ``_normalize_table_subsection_content``
+      (so only data rows remain for substitution into a template that already
+      carries the header row).
+    - ``deps`` is a ``str`` whose **first non-blank line** starts with ``|``
+      (markdown table) → strips the table header via
+      ``_normalize_table_subsection_content`` (existing path).
+    """
+    if not deps:
+        return None
+    if isinstance(deps, list):
+        return _bullet_lines(deps)
+    # str path — detect format from first non-blank line
+    for line in deps.splitlines():
+        if line.strip():
+            first_char = line.strip()[0]
+            if first_char in ("-", "*"):
+                # Bullet format → convert to table, then strip header row
+                as_table = _bullets_to_deps_table_rows(deps)
+                return _normalize_table_subsection_content(as_table)
+            # Everything else (``|`` or plain text) → existing normalization
+            break
+    return _normalize_table_subsection_content(deps)
+
+
 def _replace_block(rendered: str, old_block: str, new_block: str) -> str:
     """Replace a verbatim block; no-op when the block isn't present."""
     if old_block in rendered:
@@ -1718,14 +1817,9 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
         # Workers/Reviewers don't see misleading [ITEM] placeholder rows.
         rendered = _elide_template_section(rendered, "### MoSCoW Classification")
 
-    # Dependencies — fill when present, elide when absent.
-    deps = subs.get("dependencies")
-    if deps:
-        deps_block = (
-            _normalize_table_subsection_content(deps)
-            if isinstance(deps, str)
-            else _bullet_lines(deps)
-        )
+    # Dependencies — fill when present (auto-converting bullets → table), elide when absent.
+    deps_block = _resolve_deps_block(subs.get("dependencies"))
+    if deps_block is not None:
         # NOTE: By the time _fill_story_subsections runs, _render_template has
         # already applied global substitutions, so the original template row
         # "| #[N] | [DESCRIPTION] | [STATUS] |" no longer exists in `rendered`.
