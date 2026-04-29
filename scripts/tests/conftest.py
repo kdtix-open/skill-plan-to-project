@@ -6,6 +6,32 @@ import json
 import textwrap
 from unittest.mock import MagicMock
 
+import pytest
+
+# ---------------------------------------------------------------------------
+# Safety-phrase env var: tests that exercise --allow-shallow-subsections
+# need to satisfy the 2026-04-27 safety gate. Set the env var globally for
+# the test session (autouse) so existing tests that pass
+# `allow_shallow=True` keep working without each test setting it.
+#
+# Tests that EXPLICITLY want to verify the safety-gate behaviour (missing
+# / wrong phrase) MUST monkeypatch.delenv() or monkeypatch.setenv() with a
+# non-matching value to override this fixture.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _allow_shallow_subsections_safety_phrase(monkeypatch):
+    """Auto-confirm the --allow-shallow-subsections safety phrase for all
+    tests so the test suite isn't forced through the interactive prompt.
+    Tests that need to verify the gate's failure paths can override.
+    """
+    monkeypatch.setenv(
+        "SKILL_PLAN_TO_PROJECT_SHALLOW_SUBSECTIONS_CONFIRM",
+        "AGREE TO SHALLOW SUBSECTIONS",
+    )
+    yield
+
 # ---------------------------------------------------------------------------
 # Mock helpers
 # ---------------------------------------------------------------------------

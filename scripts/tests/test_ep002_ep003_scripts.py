@@ -1150,9 +1150,19 @@ class TestFR45RequiredSubsectionGate:
             create_issues.enforce_subsection_schema(hierarchy)
         assert exc_info.value.code == 3
 
-    def test_enforce_subsection_schema_proceeds_with_allow_shallow(self, capsys):
+    def test_enforce_subsection_schema_proceeds_with_allow_shallow_via_env_phrase(
+        self, capsys, monkeypatch
+    ):
+        """Updated 2026-04-27: --allow-shallow-subsections now requires the
+        safety phrase. In non-interactive runs (pytest), the env-var path is
+        the supported way to opt in.
+        """
         from scripts import create_issues
 
+        monkeypatch.setenv(
+            create_issues._ALLOW_SHALLOW_SAFETY_ENV_VAR,
+            create_issues._ALLOW_SHALLOW_SAFETY_PHRASE,
+        )
         hierarchy = {
             "scope": {"title": "Scope", "subsections": {}},
             "initiatives": [],
@@ -1161,12 +1171,72 @@ class TestFR45RequiredSubsectionGate:
             "tasks": [],
         }
         gaps = create_issues.enforce_subsection_schema(hierarchy, allow_shallow=True)
-        # gaps returned even when allow_shallow; operator sees warning but
-        # execution continues
+        # gaps returned even when allow_shallow + safety phrase confirmed;
+        # operator sees warning but execution continues
         assert len(gaps) == 1
         assert gaps[0][0] == "scope"
         captured = capsys.readouterr()
+        assert "safety phrase confirmed via env var" in captured.err
         assert "allow-shallow-subsections set" in captured.err
+
+    def test_enforce_subsection_schema_aborts_when_safety_phrase_missing(
+        self, capsys, monkeypatch
+    ):
+        """Without the env var AND without a TTY, --allow-shallow-subsections
+        must exit non-zero before any issue body is generated.
+
+        This is the 2026-04-27 PS-182 hardening: a routine
+        `--allow-shallow-subsections` run silently produced 30+ empty-template
+        story bodies. The new safety gate forces an explicit, conscious opt-in.
+        """
+        from scripts import create_issues
+
+        # No env var + pytest's stdin is not a TTY.
+        monkeypatch.delenv(
+            create_issues._ALLOW_SHALLOW_SAFETY_ENV_VAR, raising=False
+        )
+        hierarchy = {
+            "scope": {"title": "Scope", "subsections": {}},
+            "initiatives": [],
+            "epics": [],
+            "stories": [],
+            "tasks": [],
+        }
+        with pytest.raises(SystemExit) as exc_info:
+            create_issues.enforce_subsection_schema(hierarchy, allow_shallow=True)
+        assert exc_info.value.code == 3
+        captured = capsys.readouterr()
+        assert "requires explicit" in captured.err
+        assert "AGREE TO SHALLOW SUBSECTIONS" in captured.err
+
+    def test_enforce_subsection_schema_aborts_when_safety_phrase_wrong(
+        self, capsys, monkeypatch
+    ):
+        """Setting the env var to a non-matching value must abort. The phrase
+        is exact-match (case + spaces matter); typos and approximations all
+        fail-closed.
+        """
+        from scripts import create_issues
+
+        monkeypatch.setenv(
+            create_issues._ALLOW_SHALLOW_SAFETY_ENV_VAR,
+            "agree to shallow subsections",  # wrong case
+        )
+        hierarchy = {
+            "scope": {"title": "Scope", "subsections": {}},
+            "initiatives": [],
+            "epics": [],
+            "stories": [],
+            "tasks": [],
+        }
+        with pytest.raises(SystemExit) as exc_info:
+            create_issues.enforce_subsection_schema(hierarchy, allow_shallow=True)
+        assert exc_info.value.code == 3
+        captured = capsys.readouterr()
+        # The wrapped message reads "...is set but does\n  not match the required safety phrase.\n"
+        # so the substring "match the required safety phrase" is contiguous on one line.
+        assert "match the required safety phrase" in captured.err
+        assert "AGREE TO SHALLOW SUBSECTIONS" in captured.err
 
 
 class TestRefreshMode:
