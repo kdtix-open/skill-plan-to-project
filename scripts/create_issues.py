@@ -27,7 +27,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from scripts.constants import (
     LEVEL_TO_ISSUE_TYPE,
@@ -2363,6 +2363,358 @@ def _iter_hierarchy_items(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Shallow-subsections enforcement guards (issue #68, Self-Healing R-19).
+#
+# Guard A: --allow-shallow-subsections requires --shallow-justification "<≥30 chars>"
+# Guard B: shallow command invocations write a P0 JSONL audit entry
+# Guard C: refresh + amend fail-closed against marked-shallow subtrees when the
+#          plan still fails the gate AND no fresh justification is provided;
+#          --close-shallow-debt graduation verb clears the marker once the
+#          plan passes the gate.
+# ---------------------------------------------------------------------------
+
+SHALLOW_JUSTIFICATION_MIN_LEN = 30
+SHALLOW_LABEL = "shallow:created"
+SHALLOW_GRADUATED_LABEL = "shallow:graduated"
+SHALLOW_MARKER_PREFIX = "<!-- shallow-subsections: justified by "
+
+
+def validate_shallow_justification(
+    *,
+    allow_shallow: bool,
+    justification: Optional[str],
+    command: str,
+) -> Optional[str]:
+    """Guard A: enforce that --allow-shallow-subsections is paired with
+    --shallow-justification "<text>" of at least 30 characters.
+
+    Returns the trimmed justification when valid, None when the bypass is
+    not engaged. Calls sys.exit(2) with a clear actionable message when the
+    pairing is invalid.
+    """
+    if not allow_shallow:
+        return None
+    text = (justification or "").strip()
+    if not text:
+        print(
+            "[shallow-guard] --allow-shallow-subsections requires "
+            "--shallow-justification \"<reason>\" (≥"
+            f"{SHALLOW_JUSTIFICATION_MIN_LEN} chars).\n"
+            "  Pair the flags so the bypass is consciously documented and\n"
+            "  greppable in future RCAs (Self-Healing R-19; #68).\n"
+            f"  Example: --allow-shallow-subsections --shallow-justification "
+            f"\"Stage-0 recon for OH-001; Stages 1-4 backfill filed as #NNN\"\n"
+            f"  Command: {command}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if len(text) < SHALLOW_JUSTIFICATION_MIN_LEN:
+        print(
+            f"[shallow-guard] --shallow-justification must be ≥"
+            f"{SHALLOW_JUSTIFICATION_MIN_LEN} characters "
+            f"(got {len(text)}).  Document WHY the bypass is justified — a\n"
+            f"  short tag is not enough to drive future RCA (Self-Healing R-19; #68).\n"
+            f"  Command: {command}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return text
+
+
+def inject_shallow_marker(body: str, justification: str) -> str:
+    """Append a grep-friendly HTML comment to an issue body recording the
+    bypass reason and pointing at Self-Healing R-19.
+    """
+    safe = justification.replace("-->", "-- >").strip()
+    marker = (
+        f"\n\n{SHALLOW_MARKER_PREFIX}\"{safe}\" — see Self-Healing R-19 (skill-plan-to-project#68) -->\n"
+    )
+    return body.rstrip() + marker
+
+
+def write_manifest_with_shallow_metadata(
+    *,
+    manifest: dict[str, Any],
+    output_dir: Path,
+    justification: str,
+) -> Path:
+    """Write manifest.json and stamp ``shallow_subsections_justification`` at
+    the top level. Used by ``create`` after a shallow run.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = dict(manifest)
+    payload["shallow_subsections"] = True
+    payload["shallow_subsections_justification"] = justification
+    path = output_dir / "manifest.json"
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _best_effort_apply_label(repo: str, issue_number: int, label: str) -> bool:
+    """Best-effort label apply via gh CLI.  Returns True on success, False
+    on failure (logs a warning but does NOT raise).  Caller decides whether
+    failure is fatal.
+    """
+    from scripts.gh_helpers import run_gh
+
+    try:
+        run_gh(
+            [
+                "gh",
+                "issue",
+                "edit",
+                str(issue_number),
+                "--repo",
+                repo,
+                "--add-label",
+                label,
+            ],
+            retries=1,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        print(
+            f"[shallow-guard] WARNING: could not apply label '{label}' to "
+            f"#{issue_number} ({exc}).  Continuing.",
+            file=sys.stderr,
+        )
+        return False
+
+
+def _best_effort_remove_label(repo: str, issue_number: int, label: str) -> bool:
+    from scripts.gh_helpers import run_gh
+
+    try:
+        run_gh(
+            [
+                "gh",
+                "issue",
+                "edit",
+                str(issue_number),
+                "--repo",
+                repo,
+                "--remove-label",
+                label,
+            ],
+            retries=1,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[shallow-guard] WARNING: could not remove label '{label}' from "
+            f"#{issue_number} ({exc}).  Continuing.",
+            file=sys.stderr,
+        )
+        return False
+
+
+def _root_issue_has_shallow_label(repo: str, scope_issue: int) -> bool:
+    """Best-effort: query gh for the issue's labels; return True if
+    ``shallow:created`` is present.  Returns False on any error so that we
+    don't fail-closed on a transient API hiccup (manifest is the canonical
+    source — label is a secondary signal).
+    """
+    from scripts.gh_helpers import run_gh
+
+    try:
+        result = run_gh(
+            [
+                "gh",
+                "api",
+                f"/repos/{repo}/issues/{scope_issue}",
+                "--jq",
+                ".labels[].name",
+            ],
+            retries=1,
+        )
+        names = [ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()]
+        return SHALLOW_LABEL in names
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _compute_subsection_gaps(
+    plan_path: str,
+) -> list[tuple[str, str, list[str]]]:
+    """Run the FR #45 schema gate against the plan and return the gap list."""
+    from scripts.compliance_check import check_required_subsections
+
+    hierarchy = parse_plan(plan_path)
+    gaps: list[tuple[str, str, list[str]]] = []
+    for level, item in _iter_hierarchy_items(hierarchy):
+        missing = check_required_subsections(item, level)
+        if missing:
+            gaps.append((level, item.get("title", "?"), list(missing)))
+    return gaps
+
+
+def _gaps_to_audit_items(
+    gaps: list[tuple[str, str, list[str]]]
+) -> list[dict[str, Any]]:
+    return [
+        {"level": level, "title": title, "missing": list(missing)}
+        for level, title, missing in gaps
+    ]
+
+
+def _format_gap_summary(gaps: list[tuple[str, str, list[str]]]) -> str:
+    if not gaps:
+        return "  (plan currently passes the FR #45 schema gate)"
+    out_lines = [f"  {len(gaps)} item(s) missing required subsections:"]
+    for level, title, missing in gaps[:10]:
+        out_lines.append(f"    [{level}] {title[:70]} :: missing {', '.join(missing)}")
+    if len(gaps) > 10:
+        out_lines.append(f"    ... ({len(gaps) - 10} more)")
+    return "\n".join(out_lines)
+
+
+def _shallow_remediation_block() -> str:
+    return (
+        "REMEDIATION:\n"
+        "  [A] Deepen the plan markdown to satisfy FR #45 schema, then re-run\n"
+        "      --close-shallow-debt to clear the marker, then re-run refresh.\n"
+        "  [B] Re-acknowledge the bypass with --allow-shallow-subsections\n"
+        "      --shallow-justification \"<new ≥30-char reason>\" (writes a NEW P0\n"
+        "      audit entry).\n"
+        "  [C] Abandon the refresh — accept the current bodies as-is.\n"
+    )
+
+
+def enforce_shallow_refresh_gate(
+    *,
+    plan_path: str,
+    scope_issue: int,
+    repo: str,
+    allow_shallow: bool,
+    justification: Optional[str],
+    command: str,
+) -> Optional[str]:
+    """Guard C: fail-closed on refresh/amend against a marked-shallow subtree
+    when the plan still fails FR #45 AND no fresh justification is provided.
+
+    Returns the validated justification (trimmed) when the bypass is engaged
+    AND valid; returns None when no bypass was engaged AND no block was
+    needed.  Calls sys.exit(2) when the gate refuses to proceed.
+    """
+    from scripts import audit_log, manifest_io
+
+    manifest_marked = manifest_io.is_marked_shallow(scope_issue)
+    label_marked = _root_issue_has_shallow_label(repo, scope_issue)
+    is_marked = manifest_marked or label_marked
+
+    if not is_marked:
+        # Subtree not previously shallow — defer to the standard gate flow
+        # via validate_shallow_justification (Guard A) when bypass is on.
+        return validate_shallow_justification(
+            allow_shallow=allow_shallow, justification=justification, command=command
+        )
+
+    gaps = _compute_subsection_gaps(plan_path)
+    if not gaps:
+        # Plan now passes — marker doesn't block a clean plan.  Operator
+        # may still be using --allow-shallow; that goes through Guard A.
+        return validate_shallow_justification(
+            allow_shallow=allow_shallow, justification=justification, command=command
+        )
+
+    if allow_shallow:
+        # Operator re-acknowledged the bypass — Guard A enforces the
+        # justification rule, then we emit a fresh P0 audit entry below.
+        valid = validate_shallow_justification(
+            allow_shallow=True, justification=justification, command=command
+        )
+        audit_log.emit_audit_entry(
+            command=command,
+            plan_path=plan_path,
+            scope_issue=scope_issue,
+            repo=repo,
+            shallow_items=_gaps_to_audit_items(gaps),
+            justification=valid or "",
+        )
+        return valid
+
+    # Fail-closed.
+    marker_descr = (
+        "manifest + label"
+        if (manifest_marked and label_marked)
+        else ("manifest" if manifest_marked else "label")
+    )
+    print(
+        f"[shallow-guard] FAIL-CLOSED: subtree #{scope_issue} is marked shallow "
+        f"({marker_descr}) AND the plan still fails the FR #45 schema gate AND "
+        f"--shallow-justification was not provided.\n"
+        f"\n  Marker: {marker_descr}\n"
+        f"\n  FR #45 schema-gate failure summary:\n"
+        f"{_format_gap_summary(gaps)}\n"
+        f"\n{_shallow_remediation_block()}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def close_shallow_debt(
+    *,
+    plan_path: str,
+    scope_issue: int,
+    repo: str,
+    apply: bool,
+) -> None:
+    """Graduation verb (Guard C): when invoked with --close-shallow-debt,
+    validate the plan now passes the FR #45 gate; if so, clear the manifest
+    marker, swap the ``shallow:created`` label for ``shallow:graduated`` on
+    the root issue (best-effort), and emit a ``shallow_debt_closed`` INFO
+    audit entry.  When the plan still fails the gate, exit 2 with the gate
+    failure summary and leave the marker untouched.
+    """
+    from datetime import datetime, timezone
+
+    from scripts import audit_log, manifest_io
+
+    gaps = _compute_subsection_gaps(plan_path)
+    if gaps:
+        print(
+            f"[shallow-guard] --close-shallow-debt refused: plan still fails "
+            f"the FR #45 schema gate.  Marker unchanged.\n\n"
+            f"  FR #45 schema-gate failure summary:\n"
+            f"{_format_gap_summary(gaps)}\n",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if not apply:
+        print(
+            "[shallow-guard] --close-shallow-debt: plan passes the FR #45 gate, "
+            "but --apply was not set.  Run again with --apply to clear the marker.",
+            file=sys.stderr,
+        )
+        return
+
+    actor = audit_log.detect_actor_user()
+    closed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    manifest_io.clear_shallow_debt(
+        scope_issue=scope_issue,
+        actor=actor,
+        closed_at=closed_at,
+    )
+    _best_effort_remove_label(repo, scope_issue, SHALLOW_LABEL)
+    _best_effort_apply_label(repo, scope_issue, SHALLOW_GRADUATED_LABEL)
+    audit_log.emit_audit_entry(
+        command="shallow_debt_closed",
+        plan_path=plan_path,
+        scope_issue=scope_issue,
+        repo=repo,
+        shallow_items=[],
+        justification="",
+        severity="INFO",
+    )
+    print(
+        f"[shallow-guard] shallow debt closed for #{scope_issue} (manifest "
+        f"updated, label swapped, audit entry written).",
+        file=sys.stderr,
+    )
+
+
 def enforce_subsection_schema(
     hierarchy: dict[str, Any],
     allow_shallow: bool = False,
@@ -2418,6 +2770,12 @@ def enforce_subsection_schema(
 
 def _cmd_create(args: argparse.Namespace) -> None:
     out = Path(args.output_dir) if args.output_dir else None
+    allow_shallow = getattr(args, "allow_shallow_subsections", False)
+    raw_just = getattr(args, "shallow_justification", None)
+    justification = validate_shallow_justification(
+        allow_shallow=allow_shallow, justification=raw_just, command="create"
+    )
+
     config = preflight(
         args.org,
         args.repo,
@@ -2428,10 +2786,64 @@ def _cmd_create(args: argparse.Namespace) -> None:
     )
     hierarchy = parse_plan(args.plan)
     # FR #45: gate on required subsection schema before any GH mutation.
-    enforce_subsection_schema(
-        hierarchy, allow_shallow=getattr(args, "allow_shallow_subsections", False)
-    )
-    create_all_issues(hierarchy, config, args.repo, output_dir=out)
+    gaps = enforce_subsection_schema(hierarchy, allow_shallow=allow_shallow)
+
+    manifest = create_all_issues(hierarchy, config, args.repo, output_dir=out)
+
+    if allow_shallow and justification:
+        try:
+            from scripts import audit_log
+
+            audit_log.emit_audit_entry(
+                command="create",
+                plan_path=args.plan,
+                scope_issue=_first_scope_number(manifest),
+                repo=args.repo,
+                shallow_items=_gaps_to_audit_items(gaps),
+                justification=justification,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[shallow-guard] WARNING: audit log emit failed: {exc}",
+                file=sys.stderr,
+            )
+        # Persist justification in manifest.json (top-level) and per-scope
+        # marker manifest under manifests/<scope>.json.
+        if out is not None:
+            try:
+                write_manifest_with_shallow_metadata(
+                    manifest=manifest, output_dir=out, justification=justification
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[shallow-guard] WARNING: manifest justification stamp failed: {exc}",
+                    file=sys.stderr,
+                )
+        scope_num = _first_scope_number(manifest)
+        if scope_num:
+            try:
+                from scripts import manifest_io
+
+                manifest_io.mark_shallow(
+                    scope_issue=scope_num,
+                    justification=justification,
+                    repo=args.repo,
+                    plan_path=args.plan,
+                    actor=__import__("scripts.audit_log", fromlist=["x"]).detect_actor_user(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[shallow-guard] WARNING: per-scope manifest write failed: {exc}",
+                    file=sys.stderr,
+                )
+            _best_effort_apply_label(args.repo, scope_num, SHALLOW_LABEL)
+
+
+def _first_scope_number(manifest: dict[str, Any]) -> Optional[int]:
+    for _key, rec in (manifest or {}).items():
+        if isinstance(rec, dict) and rec.get("level") == "scope" and rec.get("number"):
+            return int(rec["number"])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2770,6 +3182,24 @@ def _cmd_amend(args: argparse.Namespace) -> None:
         raise AmendError(
             "Must pass exactly one of --target-scope/--target-initiative/"
             "--target-epic/--target-story"
+        )
+
+    allow_shallow = getattr(args, "allow_shallow_subsections", False)
+    raw_just = getattr(args, "shallow_justification", None)
+    # When the target is a Project Scope, apply Guard C marker-aware admission
+    # control.  For lower-level targets, fall through to Guard A only.
+    if target_kind == "scope":
+        enforce_shallow_refresh_gate(
+            plan_path=args.plan,
+            scope_issue=target_number,
+            repo=args.repo,
+            allow_shallow=allow_shallow,
+            justification=raw_just,
+            command="amend",
+        )
+    else:
+        validate_shallow_justification(
+            allow_shallow=allow_shallow, justification=raw_just, command="amend"
         )
 
     out = Path(args.output_dir) if args.output_dir else None
@@ -3260,13 +3690,37 @@ def refresh_backlog(
 def _cmd_refresh(args: argparse.Namespace) -> None:
     out = Path(args.output_dir) if args.output_dir else None
     skip_issues: set[int] = set(getattr(args, "skip_issue", None) or [])
+    allow_shallow = getattr(args, "allow_shallow_subsections", False)
+    raw_just = getattr(args, "shallow_justification", None)
+
+    if getattr(args, "close_shallow_debt", False):
+        close_shallow_debt(
+            plan_path=args.plan,
+            scope_issue=args.scope_issue,
+            repo=args.repo,
+            apply=not args.dry_run,
+        )
+        if args.dry_run:
+            return  # graduation only — don't run body re-render in dry-run
+        # else fall through and re-render bodies in the same shot
+
+    # Guard C: marker + plan-state-aware admission control before refresh.
+    enforce_shallow_refresh_gate(
+        plan_path=args.plan,
+        scope_issue=args.scope_issue,
+        repo=args.repo,
+        allow_shallow=allow_shallow,
+        justification=raw_just,
+        command="refresh",
+    )
+
     report = refresh_backlog(
         plan_path=args.plan,
         repo=args.repo,
         scope_issue_number=args.scope_issue,
         dry_run=args.dry_run,
         skip_issues=skip_issues or None,
-        allow_shallow_subsections=getattr(args, "allow_shallow_subsections", False),
+        allow_shallow_subsections=allow_shallow,
     )
     if out:
         out.mkdir(parents=True, exist_ok=True)
@@ -3325,7 +3779,18 @@ def main() -> None:
         help=(
             "FR #45: bypass the required-subsection gate (default: fail-fast "
             "when plan items lack per-level required subsections). "
-            "Use SPARINGLY — document why in commit / PR body."
+            "Use SPARINGLY — must be paired with --shallow-justification."
+        ),
+    )
+    p_create.add_argument(
+        "--shallow-justification",
+        default=None,
+        help=(
+            "Issue #68 / Self-Healing R-19: required when "
+            "--allow-shallow-subsections is set.  Free-text rationale (≥30 "
+            "chars) explaining WHY the bypass is justified.  Captured into "
+            "manifest.json, every generated issue body, and a JSONL P0 "
+            "audit log entry."
         ),
     )
     p_create.add_argument(
@@ -3388,7 +3853,29 @@ def main() -> None:
         help=(
             "FR #45: bypass the required-subsection gate. Default: fail-fast "
             "when plan items lack per-level required subsections. "
-            "Document why you used this flag in the commit / PR body."
+            "Must be paired with --shallow-justification."
+        ),
+    )
+    p_refresh.add_argument(
+        "--shallow-justification",
+        default=None,
+        help=(
+            "Issue #68 / Self-Healing R-19: required when "
+            "--allow-shallow-subsections is set.  Free-text rationale (≥30 "
+            "chars) explaining WHY the bypass is justified.  Writes a fresh "
+            "P0 JSONL audit entry on every refresh that engages the bypass."
+        ),
+    )
+    p_refresh.add_argument(
+        "--close-shallow-debt",
+        action="store_true",
+        default=False,
+        help=(
+            "Issue #68 / Self-Healing R-19 graduation verb: validate the "
+            "plan now passes the FR #45 schema gate and clear the "
+            "shallow_subsections marker on the manifest + swap the "
+            "shallow:created label for shallow:graduated on the root issue. "
+            "Combine with --apply to also re-render bodies in the same shot."
         ),
     )
 
@@ -3446,7 +3933,16 @@ def main() -> None:
         help=(
             "FR #45: bypass the required-subsection gate. Default: fail-fast "
             "when plan items lack per-level required subsections. "
-            "Document why you used this flag in the commit / PR body."
+            "Must be paired with --shallow-justification."
+        ),
+    )
+    p_amend.add_argument(
+        "--shallow-justification",
+        default=None,
+        help=(
+            "Issue #68 / Self-Healing R-19: required when "
+            "--allow-shallow-subsections is set.  Free-text rationale (≥30 "
+            "chars).  Writes a P0 audit entry."
         ),
     )
     p_amend.add_argument(

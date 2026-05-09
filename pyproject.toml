@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plan-to-project"
-version = "0.1.0"
+version = "0.2.0"
 description = "GitHub Copilot skill: convert a markdown plan into a GitHub Project backlog"
 requires-python = ">=3.9"
 dependencies = [

@@ -296,12 +296,62 @@ plans being refreshed in-place), pass `--allow-shallow-subsections` on either
 Resulting issue bodies will carry template placeholder leaks (flagged by the
 P0-4 scanner).
 
-Use SPARINGLY. Document why in the commit / PR body:
+Use SPARINGLY. As of skill version 0.2.0 (issue #68 / Self-Healing R-19), the
+flag is no longer a no-op — it must be paired with three layered guards:
+
+##### Guard A — `--shallow-justification "<reason>"` (required, ≥30 chars)
 
 ```bash
 python3 -m scripts.create_issues create --plan plan.md --org X --repo X/Y \
-    --project N --allow-shallow-subsections
+    --project N \
+    --allow-shallow-subsections \
+    --shallow-justification "Stage-0 recon for OH-001 hot-lane; Stages 1-4 backfill filed as kdtix-open/agent-project-queue#NNN"
 ```
+
+The justification is captured into:
+- `manifest.json` as the top-level `shallow_subsections_justification` field;
+- every generated issue body as a grep-friendly HTML comment marker
+  (`<!-- shallow-subsections: justified by "<reason>" — see Self-Healing R-19 ... -->`);
+- a `shallow:created` label on the root scope/initiative/epic issue (best-effort
+  — warns + continues if the label doesn't exist on the repo).
+
+##### Guard B — P0 JSONL audit log
+
+Every shallow `create` / `refresh` / `amend` invocation appends a structured
+JSONL entry to
+`${SDLCA_AUDIT_DIR:-~/.sdlca}/skill-plan-to-project-audit.jsonl`. The audit dir
+is auto-created with mode `0o700` if missing. Schema includes timestamp, actor
+email, token kind (`github-app` / `pat` / `unknown`), command, plan path,
+scope issue, repo, list of items missing required subsections, the verbatim
+justification, severity (`P0`), skill version, and the full argv. Inspect with:
+
+```bash
+python3 -m scripts.audit_log tail -n 10
+```
+
+##### Guard C — fail-closed refresh + `--close-shallow-debt` graduation
+
+A subtree is "marked shallow" if EITHER the per-scope manifest under
+`manifests/<scope-issue>.json` records `shallow_subsections: true` OR the root
+issue carries the `shallow:created` label. Subsequent `refresh` / `amend`
+invocations against a marked subtree fail-closed (exit 2) when the plan still
+fails the FR #45 schema gate AND no fresh `--shallow-justification` is
+provided. The error message reports the marker source, the schema-gate failure
+summary, and three remediation paths (deepen plan + graduate; re-acknowledge
+bypass; abandon refresh).
+
+To clear the marker once the plan has been deepened and now passes the gate:
+
+```bash
+python3 -m scripts.create_issues refresh --plan plan.md --repo X/Y \
+    --scope-issue 271 --close-shallow-debt --apply
+```
+
+This validates the plan passes the gate, sets `shallow_subsections: false` on
+the manifest with `shallow_debt_closed_at` + `shallow_debt_closed_by`, swaps
+the `shallow:created` label for `shallow:graduated` on the root issue, emits an
+INFO `shallow_debt_closed` audit entry, and proceeds with the regular body
+re-render in the same shot.
 
 ### Backward compatibility
 

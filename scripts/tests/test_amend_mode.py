@@ -572,6 +572,9 @@ def test_cmd_amend_target_story_routes_to_amend_backlog(fake_config, tmp_path):
         output_dir=None,
         force=False,
         allow_shallow_subsections=True,
+        shallow_justification=(
+            "Stage-0 recon for amend dispatch test; Stages 1-4 backfill follows."
+        ),
         auto_create_issue_types=False,
     )
     # Don't actually run amend_backlog; just verify dispatch routing.
