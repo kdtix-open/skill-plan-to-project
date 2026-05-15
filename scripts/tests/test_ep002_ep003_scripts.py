@@ -2515,6 +2515,35 @@ class TestRenderInitiativeSubsections:
         assert "- [ ] Runbook" in body
         assert "- [ ] Dashboard" in body
 
+    def test_dependencies_subsection_replaces_post_substitution_placeholder(self):
+        """Initiative-level regression for the same pre-vs-post-substitution
+        bug fixed in the Epic renderer. ``_render_template`` substitutes
+        [OWNER]→TBD and [STATUS]→Backlog before ``_fill_initiative_subsections``
+        runs, so the match must target the post-substitution row.
+        """
+        from scripts import create_issues
+
+        item = self._init_item(
+            "#### Dependencies\n\n"
+            "| Dependency | Type | Owner | Status |\n"
+            "|------------|------|-------|--------|\n"
+            "| Platform Budgets PS-XXX | Cross-PS | Platform team | In progress |\n"
+        )
+        body = create_issues.generate_body(item, "initiative")
+
+        # Anchor on "\n### " to skip the embedded "#### " source-prose copy.
+        deps_start = body.find("\n### Dependencies")
+        assert deps_start >= 0, "template Dependencies section not found"
+        next_section = body.find("\n### ", deps_start + 1)
+        deps_section = body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+
+        assert (
+            "| Platform Budgets PS-XXX | Cross-PS | Platform team | In progress |"
+            in deps_section
+        )
+        assert "[DEPENDENCY] | [TYPE]" not in deps_section
+        assert "| [DEPENDENCY] | [TYPE] | TBD | Backlog |" not in deps_section
+
 
 class TestRenderEpicSubsections:
     def _epic_item(self, body: str) -> dict:
@@ -2546,6 +2575,66 @@ class TestRenderEpicSubsections:
         body = create_issues.generate_body(item, "epic")
         assert "- [QUESTION]" not in body
         assert "- Sync or async cache?" in body
+
+    def test_dependencies_subsection_replaces_post_substitution_placeholder(self):
+        """Regression for the [OWNER]/[STATUS] pre-vs-post-substitution bug.
+
+        ``_render_template`` applies global substitutions ([OWNER]→TBD,
+        [STATUS]→Backlog) BEFORE ``_fill_epic_subsections`` runs, so the
+        Dependencies replacement must match the post-substitution row
+        ``| [DEPENDENCY] | [TYPE] | TBD | Backlog |`` rather than the
+        pre-substitution template literal. Empirical trigger:
+        kdtix-open/agent-project-queue#184 (EP-023) left this placeholder
+        row in the rendered body despite a properly-authored plan.
+        """
+        from scripts import create_issues
+
+        item = self._epic_item(
+            "#### Dependencies\n\n"
+            "| Dependency | Type | Owner | Status |\n"
+            "|------------|------|-------|--------|\n"
+            "| OAuth refactor #100 | Code | Backend team | In progress |\n"
+            "| API freeze window | Process | PM | Pending |\n"
+        )
+        body = create_issues.generate_body(item, "epic")
+
+        # The TEMPLATE Dependencies section (h3, not the embedded h4 prose
+        # copy of the source description) must contain the plan-supplied
+        # rows and NOT the placeholder row in either pre- or post-
+        # substitution form. Anchor on "\n### " to skip the "#### "
+        # prose copy of the input description that lives earlier in body.
+        deps_start = body.find("\n### Dependencies")
+        assert deps_start >= 0, "template Dependencies section not found"
+        next_section = body.find("\n### ", deps_start + 1)
+        deps_section = body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+
+        assert "| OAuth refactor #100 | Code | Backend team | In progress |" in deps_section
+        assert "| API freeze window | Process | PM | Pending |" in deps_section
+        assert "[DEPENDENCY] | [TYPE]" not in deps_section
+        assert "| [DEPENDENCY] | [TYPE] | TBD | Backlog |" not in deps_section
+
+    def test_dependencies_subsection_absent_leaves_placeholder_or_elided(self):
+        """When the plan omits Dependencies the section may keep the
+        template placeholder row (consistent with other Epic subsections
+        that don't elide). The fix MUST NOT regress to producing a body
+        with the placeholder row REPLACED by garbage — either the
+        original placeholder is intact OR the section is cleanly elided.
+        """
+        from scripts import create_issues
+
+        item = self._epic_item("#### Release Value\nSomething ships.\n")
+        body = create_issues.generate_body(item, "epic")
+
+        deps_start = body.find("\n### Dependencies")
+        if deps_start >= 0:
+            # Section preserved — placeholder row must still be coherent
+            # (either the pre- or post-substitution form is acceptable).
+            next_section = body.find("\n### ", deps_start + 1)
+            deps_section = body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+            assert (
+                "| [DEPENDENCY] | [TYPE] | TBD | Backlog |" in deps_section
+                or "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |" in deps_section
+            )
 
 
 class TestRenderStorySubsections:
