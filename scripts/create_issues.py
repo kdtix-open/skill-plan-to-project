@@ -1645,9 +1645,17 @@ def _fill_initiative_subsections(rendered: str, subs: dict[str, Any]) -> str:
             if isinstance(deps, str)
             else _bullet_lines(deps)
         )
+        # NOTE: By the time _fill_initiative_subsections runs, _render_template
+        # has already applied global substitutions, so the original template row
+        # "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |" no longer exists in
+        # `rendered`:
+        #   [OWNER]  → "TBD"
+        #   [STATUS] → "Backlog"
+        # We must match the post-substitution string instead. Same pattern as
+        # the Story renderer's documented workaround in _fill_story_subsections.
         rendered = _replace_block(
             rendered,
-            "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |",
+            "| [DEPENDENCY] | [TYPE] | TBD | Backlog |",
             deps_block,
         )
 
@@ -1730,9 +1738,17 @@ def _fill_epic_subsections(rendered: str, subs: dict[str, Any]) -> str:
             if isinstance(deps, str)
             else _bullet_lines(deps)
         )
+        # NOTE: By the time _fill_epic_subsections runs, _render_template has
+        # already applied global substitutions, so the original template row
+        # "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |" no longer exists in
+        # `rendered`:
+        #   [OWNER]  → "TBD"
+        #   [STATUS] → "Backlog"
+        # We must match the post-substitution string instead. Same pattern as
+        # the Story renderer's documented workaround in _fill_story_subsections.
         rendered = _replace_block(
             rendered,
-            "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |",
+            "| [DEPENDENCY] | [TYPE] | TBD | Backlog |",
             deps_block,
         )
 
