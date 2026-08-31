@@ -163,9 +163,22 @@ class TestChildLinkageRows:
 
 
 class TestP04BareNDetection:
-    def test_placeholder_re_matches_bare_n(self) -> None:
+    """A confirmed PR #75 review finding: an earlier revision anchored
+    PLACEHOLDER_RE's `[N]` alternative to `(?<=#)\\[N\\]` to avoid a
+    false positive on code references like `arr[N]`, but that regressed
+    issue #74's literal acceptance criterion ("Update P0-4 so `[N]` is
+    detected") — a bare `[N]` with no `#` prefix (e.g. "issue [N]") no
+    longer tripped the gate. The fix is context-aware exclusion (strip
+    code spans/blocks before scanning — see `_strip_code_spans` in
+    `compliance_check.py`) rather than narrowing the regex itself, so
+    `[N]` is detected unconditionally again."""
+
+    def test_placeholder_re_matches_n_regardless_of_prefix(self) -> None:
         assert PLACEHOLDER_RE.search("see issue #[N] for details")
         assert PLACEHOLDER_RE.search("| 1 | #[N] | Title |")
+        # No `#` prefix — must still match (the regressed case).
+        assert PLACEHOLDER_RE.search("[N]")
+        assert PLACEHOLDER_RE.search("issue [N]")
 
     def test_checkbox_markers_still_allowed(self) -> None:
         for line in ("- [ ] open item", "- [x] done item", "- [X] done item"):
@@ -182,6 +195,57 @@ class TestP04BareNDetection:
         assert p04, "expected a P0-4 gap for bare #[N]"
         assert "[N]" in p04[0]["placeholders"]
 
+    def test_check_issue_flags_n_with_no_hash_prefix(self) -> None:
+        body = (
+            "## I Know I Am Done When\n"
+            "TDD followed: failing test written BEFORE implementation\n\n"
+            "See issue [N] for the full discussion.\n"
+        )
+        gaps = check_issue(1, "Sample", body, "task")
+        p04 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert p04, "expected a P0-4 gap for a bare [N] with no # prefix"
+
+    def test_check_issue_ignores_code_reference_in_backticks(self) -> None:
+        """`arr[N]` inside backticks is legitimate authored content (array
+        indexing in implementation notes), not an unfilled placeholder —
+        context-aware exclusion via code-span stripping, not regex
+        narrowing, is what must keep this from tripping P0-4."""
+        body = (
+            "## I Know I Am Done When\n"
+            "TDD followed: failing test written BEFORE implementation\n\n"
+            "## Implementation Notes\n\n"
+            "Use `arr[N]` indexing in the ring buffer.\n"
+        )
+        gaps = check_issue(1, "Sample", body, "task")
+        assert not [g for g in gaps if g["rule"] == "P0-4"]
+
+    def test_check_issue_ignores_mermaid_node_bracket_syntax(self) -> None:
+        """Mermaid flowchart node syntax (`A[Start]`) inside a fenced
+        ```mermaid block must not trip P0-4 — it's diagram syntax, not a
+        template leak."""
+        body = (
+            "## I Know I Am Done When\n"
+            "TDD followed: failing test written BEFORE implementation\n\n"
+            "```mermaid\n"
+            "flowchart LR\n"
+            "    A[Start] --> B[Finish]\n"
+            "```\n"
+        )
+        gaps = check_issue(1, "Sample", body, "task")
+        assert not [g for g in gaps if g["rule"] == "P0-4"]
+
+    def test_check_issue_still_flags_bare_n_outside_code(self) -> None:
+        """The exclusion is code-scoped, not blanket: a bare `[N]` sitting
+        in ordinary prose right next to a code span must still trip P0-4."""
+        body = (
+            "## I Know I Am Done When\n"
+            "TDD followed: failing test written BEFORE implementation\n\n"
+            "Use `arr[N]` indexing; see issue [N] for context.\n"
+        )
+        gaps = check_issue(1, "Sample", body, "task")
+        p04 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert p04, "expected a P0-4 gap for the bare [N] outside the code span"
+
     def test_check_issue_checkboxes_produce_no_p04(self) -> None:
         body = (
             "## I Know I Am Done When\n"
@@ -190,6 +254,39 @@ class TestP04BareNDetection:
         )
         gaps = check_issue(1, "Sample", body, "task")
         assert not [g for g in gaps if g["rule"] == "P0-4"]
+
+    def test_check_issue_flags_uppercase_vision_placeholder(self) -> None:
+        """A confirmed PR #75 review finding: the scope template's
+        narrative-fallback placeholder is ALL CAPS
+        ("[VISION — 1-2 sentences ...]"), not the title-case "Vision" the
+        descriptive regex's alternation lists — so a scope item with every
+        other required subsection populated but no Vision text silently
+        shipped with no P0-4 gap. PLACEHOLDER_DESCRIPTIVE_RE must match
+        case-insensitively."""
+        body = (
+            "## Vision\n\n"
+            "[VISION — 1-2 sentences on the end state and the value "
+            "delivered]\n\n"
+            "## I Know I Am Done When\n\n"
+            "TDD followed: failing test written BEFORE implementation\n"
+        )
+        gaps = check_issue(1, "Sample", body, "scope")
+        p04 = [g for g in gaps if g["rule"] == "P0-4"]
+        assert p04, "expected a P0-4 gap for the unfilled all-caps VISION placeholder"
+
+    # NOTE: an end-to-end reproduction via generate_body() (render a scope
+    # item with every FR #45 required subsection populated but no Vision,
+    # confirm check_issue flags it) is deliberately NOT included here. On
+    # this branch, `_render_template`'s separate, pre-existing
+    # narrative-fallback bug (see the filed follow-up task) currently
+    # substitutes the whole raw description into the Vision slot in that
+    # exact scenario — so the `[VISION ...]` placeholder this test targets
+    # never actually reaches `generate_body`'s output today, and the
+    # end-to-end assertion can't exercise what it's meant to. The direct
+    # scanner-level test above is the real regression guard for what this
+    # PR changes (PLACEHOLDER_DESCRIPTIVE_RE case-sensitivity); add the
+    # end-to-end version once the narrative-fallback fix lands and truly
+    # leaves the placeholder in place.
 
 
 # ---------------------------------------------------------------------------

@@ -62,18 +62,21 @@ DONE_WHEN_RE = re.compile(r"I Know I Am Done When", re.IGNORECASE)
 #   - [ ]  + [x]  + [X]  — task-list checkboxes (any length, handled
 #     separately by the regex's minimum-content requirement)
 #   - bare numeric references like [N]  NOT allowlisted — those are legit
-#     placeholders too ("issue #[N]") and should trigger P0-4
+#     placeholders too ("issue #[N]", or bare "issue [N]") and MUST trigger
+#     P0-4 (issue #74's literal acceptance criterion + this scanner's own
+#     documented contract) regardless of what precedes them.
 #
 # The regex requires at least one uppercase letter at the start of the
 # bracket contents + at least 2 characters total, which naturally excludes
-# empty brackets + checkbox markers without requiring special cases —
-# plus a `#`-anchored alternative for the templates' bare issue-number
-# token, which only ever appears as `#[N]` (issue #74: it previously
-# escaped the gate because of the 2-character minimum).  The `#` anchor
-# keeps legitimate authored content like `arr[N]` in implementation notes
-# from tripping the gate; checkbox markers (`[ ]`, `[x]`, `[X]`) remain
-# excluded as before.
-PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9 _,/\-\[\]—\.]+\]|(?<=#)\[N\]")
+# empty brackets + checkbox markers without requiring special cases — plus
+# an explicit single-character alternative for the templates' bare
+# issue-number token `[N]` (it previously escaped the 2-character minimum).
+# Legitimate code references like `arr[N]` are excluded not by narrowing
+# this regex (an earlier revision tried anchoring to `#[N]` specifically,
+# which regressed the documented bare-`[N]` contract per review) but by
+# `_strip_code_spans()`, called on the scan target BEFORE these regexes run
+# — see `check_issue`.
+PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9 _,/\-\[\]—\.]+\]|\[N\]")
 
 # P0-5 (FR #40): Mermaid block validation.  A ```mermaid fenced block is
 # considered valid when its first non-blank, non-comment (`%%`) line starts
@@ -231,12 +234,38 @@ def _find_invalid_mermaid_blocks(body: str) -> list[str]:
 # all-caps rule above (e.g. "[Describe the problem ...]", "[1-sentence
 # summary...]", "[Why this initiative exists...]").  These all start with a
 # capital then descend to lowercase — match them with a separate regex.
+#
+# IGNORECASE (issue #74 review): the scope template's narrative-fallback
+# placeholder is "[VISION — 1-2 sentences ...]" — ALL CAPS, not the
+# title-case "Vision" this alternation lists — so it silently escaped
+# detection whenever a plan supplied every other required scope subsection
+# but no Vision text.  Matching case-insensitively catches that (and any
+# future all-caps rendering of an already-listed word) without maintaining
+# a second, duplicate all-caps entry per word.
 PLACEHOLDER_DESCRIPTIVE_RE = re.compile(
     r"\[(?:Describe|Why|List|Vision|Objective|Backend|1-sentence|1-3 sentences|"
     r"DESCRIPTION|ITEM|CRITERION|ASSUMPTION|PROJECT-SPECIFIC|What|VERSION|POINTS|HOURS|"
     r"P0/P1/P2|POINTS\] pts|HOURS\] hrs|CODE)"
-    r"[^\]]*\]"
+    r"[^\]]*\]",
+    re.IGNORECASE,
 )
+
+# Code spans/blocks to strip from the scan target before running the P0-4
+# regexes above (issue #74 review): legitimate authored code references
+# like `` `arr[N]` `` in Implementation Notes, or Mermaid flowchart node
+# syntax like `A[Start]` inside a ```mermaid block, would otherwise trip
+# the bare-`[N]`/all-caps placeholder patterns.  Excluding by content
+# (fenced/inline code), rather than by narrowing the placeholder regexes
+# themselves, keeps the documented literal contract intact — see
+# PLACEHOLDER_RE's docstring above.
+_FENCED_CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_SPAN_RE = re.compile(r"`[^`\n]+`")
+
+
+def _strip_code_spans(body: str) -> str:
+    """Remove fenced code blocks and inline code spans from `body`."""
+    body = _FENCED_CODE_BLOCK_RE.sub("", body)
+    return _INLINE_CODE_SPAN_RE.sub("", body)
 
 
 # ---------------------------------------------------------------------------
@@ -295,10 +324,14 @@ def check_issue(
     # replace.  Collect all matches + report counts.  Not auto-fixed —
     # placeholders require the structured-parser (Stage 2) or operator input
     # (Stage 3 interactive) to fill.  Reported as P0 to fail the ship.
+    # Scanned against code-stripped text (see `_strip_code_spans`) so
+    # legitimate code references don't trip the gate; `body` itself (not
+    # the stripped copy) is used everywhere else in this function.
+    scan_body = _strip_code_spans(body)
     placeholder_matches = set()
-    for m in PLACEHOLDER_RE.findall(body):
+    for m in PLACEHOLDER_RE.findall(scan_body):
         placeholder_matches.add(m)
-    for m in PLACEHOLDER_DESCRIPTIVE_RE.findall(body):
+    for m in PLACEHOLDER_DESCRIPTIVE_RE.findall(scan_body):
         placeholder_matches.add(m)
     if placeholder_matches:
         # Sort for stable ordering in the gap report
