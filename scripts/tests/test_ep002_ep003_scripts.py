@@ -981,9 +981,9 @@ class TestFR53TddSentinelDedup:
         rendered = create_issues.generate_body(item, "story")
         # Count lines that mention TDD — should be exactly 1 (operator's bullet)
         tdd_lines = [line for line in rendered.splitlines() if "TDD followed" in line]
-        assert len(tdd_lines) == 1, (
-            f"expected 1 TDD line, got {len(tdd_lines)}: {tdd_lines}"
-        )
+        assert (
+            len(tdd_lines) == 1
+        ), f"expected 1 TDD line, got {len(tdd_lines)}: {tdd_lines}"
 
     def test_story_done_when_without_tdd_keeps_sentinel(self):
         """Backward compat: if operator doesn't mention TDD, template sentinel stays."""
@@ -1006,9 +1006,9 @@ class TestFR53TddSentinelDedup:
             "subsections": create_issues._parse_subsections(body, "story"),
         }
         rendered = create_issues.generate_body(item, "story")
-        assert "TDD followed: failing test written BEFORE" in rendered, (
-            "template sentinel should remain when operator didn't mention TDD"
-        )
+        assert (
+            "TDD followed: failing test written BEFORE" in rendered
+        ), "template sentinel should remain when operator didn't mention TDD"
 
 
 class TestFR46AutoCreateIssueTypes:
@@ -2374,7 +2374,11 @@ class TestSubsectionParser:
         subs = create_issues._parse_subsections(body, "initiative")
         assert subs["objective"] == "Why it exists."
         assert subs["release_value"] == "What ships."
-        assert subs["artifacts"] == ["Runbook", "Dashboard"]
+        # Issue #74: Artifacts parses as raw text (not a bullet list) so
+        # non-bullet content (tables, paragraphs, wrapped continuation
+        # lines) commonly authored in Artifacts sections isn't silently
+        # dropped — the renderer checkboxifies bullet lines at render time.
+        assert subs["artifacts"] == "- Runbook\n- Dashboard"
 
     def test_parses_task_specific_keys(self):
         from scripts import create_issues
@@ -2535,7 +2539,9 @@ class TestRenderInitiativeSubsections:
         deps_start = body.find("\n### Dependencies")
         assert deps_start >= 0, "template Dependencies section not found"
         next_section = body.find("\n### ", deps_start + 1)
-        deps_section = body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+        deps_section = (
+            body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+        )
 
         assert (
             "| Platform Budgets PS-XXX | Cross-PS | Platform team | In progress |"
@@ -2606,9 +2612,14 @@ class TestRenderEpicSubsections:
         deps_start = body.find("\n### Dependencies")
         assert deps_start >= 0, "template Dependencies section not found"
         next_section = body.find("\n### ", deps_start + 1)
-        deps_section = body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+        deps_section = (
+            body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+        )
 
-        assert "| OAuth refactor #100 | Code | Backend team | In progress |" in deps_section
+        assert (
+            "| OAuth refactor #100 | Code | Backend team | In progress |"
+            in deps_section
+        )
         assert "| API freeze window | Process | PM | Pending |" in deps_section
         assert "[DEPENDENCY] | [TYPE]" not in deps_section
         assert "| [DEPENDENCY] | [TYPE] | TBD | Backlog |" not in deps_section
@@ -2630,7 +2641,9 @@ class TestRenderEpicSubsections:
             # Section preserved — placeholder row must still be coherent
             # (either the pre- or post-substitution form is acceptable).
             next_section = body.find("\n### ", deps_start + 1)
-            deps_section = body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+            deps_section = (
+                body[deps_start:next_section] if next_section > 0 else body[deps_start:]
+            )
             assert (
                 "| [DEPENDENCY] | [TYPE] | TBD | Backlog |" in deps_section
                 or "| [DEPENDENCY] | [TYPE] | [OWNER] | [STATUS] |" in deps_section
@@ -2773,13 +2786,11 @@ class TestIssue60RendererGapFixes:
         section must be absent from the rendered body (not rendered as _TBD_)."""
         from scripts import create_issues
 
-        item = self._story_item(
-            "#### Why This Matters\nThis feature is critical.\n"
-        )
+        item = self._story_item("#### Why This Matters\nThis feature is critical.\n")
         body = create_issues.generate_body(item, "story")
-        assert "### Dependencies" not in body, (
-            "Dependencies section should be elided when plan has no dep content"
-        )
+        assert (
+            "### Dependencies" not in body
+        ), "Dependencies section should be elided when plan has no dep content"
 
     def test_dependencies_section_present_when_plan_has_content(self):
         """When plan carries a ### Dependencies subsection, the rendered body
@@ -2813,7 +2824,9 @@ class TestIssue60RendererGapFixes:
         assert "### Dependencies" in body
         deps_start = body.find("### Dependencies")
         next_section = body.find("\n### ", deps_start + 1)
-        deps_block = body[deps_start:next_section] if next_section >= 0 else body[deps_start:]
+        deps_block = (
+            body[deps_start:next_section] if next_section >= 0 else body[deps_start:]
+        )
         assert "#204 OidcProviderConfig must be merged" in deps_block
 
     def test_preconditions_heading_parsed_as_dependencies(self):
@@ -2836,13 +2849,11 @@ class TestIssue60RendererGapFixes:
         section must be absent from the rendered body."""
         from scripts import create_issues
 
-        item = self._story_item(
-            "#### Why This Matters\nThis feature is needed.\n"
-        )
+        item = self._story_item("#### Why This Matters\nThis feature is needed.\n")
         body = create_issues.generate_body(item, "story")
-        assert "### Constraints" not in body, (
-            "Constraints section should be elided when plan has no constraint content"
-        )
+        assert (
+            "### Constraints" not in body
+        ), "Constraints section should be elided when plan has no constraint content"
 
     def test_constraints_section_present_when_plan_has_content(self):
         """When plan carries a ### Constraints subsection, the rendered body
@@ -2865,7 +2876,9 @@ class TestIssue60RendererGapFixes:
         assert "### Constraints" in body
         c_start = body.find("### Constraints")
         next_section = body.find("\n### ", c_start + 1)
-        constraints_block = body[c_start:next_section] if next_section >= 0 else body[c_start:]
+        constraints_block = (
+            body[c_start:next_section] if next_section >= 0 else body[c_start:]
+        )
         assert "- Must not break existing auth" in constraints_block
 
     def test_hard_constraints_heading_parsed_as_constraints(self):
@@ -2889,13 +2902,11 @@ class TestIssue60RendererGapFixes:
         section must be absent from the rendered body."""
         from scripts import create_issues
 
-        item = self._story_item(
-            "#### Why This Matters\nCritical path item.\n"
-        )
+        item = self._story_item("#### Why This Matters\nCritical path item.\n")
         body = create_issues.generate_body(item, "story")
-        assert "### Subtasks Needed" not in body, (
-            "Subtasks Needed section should be elided when plan has no subtask content"
-        )
+        assert (
+            "### Subtasks Needed" not in body
+        ), "Subtasks Needed section should be elided when plan has no subtask content"
 
     # ------------------------------------------------------------------
     # 5. MoSCoW — elide when absent, no residual [ITEM] placeholders
@@ -2915,12 +2926,12 @@ class TestIssue60RendererGapFixes:
             "subsections": {},
         }
         body = create_issues.generate_body(item, "story")
-        assert "### MoSCoW" not in body, (
-            "MoSCoW section should be elided when plan has no MoSCoW content"
-        )
-        assert "[ITEM]" not in body, (
-            "No [ITEM] placeholders should remain when MoSCoW is absent"
-        )
+        assert (
+            "### MoSCoW" not in body
+        ), "MoSCoW section should be elided when plan has no MoSCoW content"
+        assert (
+            "[ITEM]" not in body
+        ), "No [ITEM] placeholders should remain when MoSCoW is absent"
 
     def test_moscow_section_present_when_plan_has_content(self):
         """When plan carries a MoSCoW subsection, the rendered body must include
@@ -2944,14 +2955,16 @@ class TestIssue60RendererGapFixes:
         moscow_start = body.find("### MoSCoW")
         next_section = body.find("\n### ", moscow_start + 1)
         moscow_block = (
-            body[moscow_start:next_section] if next_section >= 0 else body[moscow_start:]
+            body[moscow_start:next_section]
+            if next_section >= 0
+            else body[moscow_start:]
         )
-        assert "First requirement" in moscow_block, (
-            "MoSCoW content must be in the MoSCoW section, not leaked into TL;DR"
-        )
-        assert "[ITEM]" not in moscow_block, (
-            "No residual [ITEM] placeholder should remain in the MoSCoW section"
-        )
+        assert (
+            "First requirement" in moscow_block
+        ), "MoSCoW content must be in the MoSCoW section, not leaked into TL;DR"
+        assert (
+            "[ITEM]" not in moscow_block
+        ), "No residual [ITEM] placeholder should remain in the MoSCoW section"
 
     # ------------------------------------------------------------------
     # T1: empty MoSCoW group — no residual [ITEM] placeholder
@@ -2983,14 +2996,16 @@ class TestIssue60RendererGapFixes:
         moscow_start = body.find("### MoSCoW")
         next_section = body.find("\n### ", moscow_start + 1)
         moscow_block = (
-            body[moscow_start:next_section] if next_section >= 0 else body[moscow_start:]
+            body[moscow_start:next_section]
+            if next_section >= 0
+            else body[moscow_start:]
         )
-        assert "| Should Have | [ITEM] |" not in moscow_block, (
-            "Empty Should Have group must not render residual [ITEM] placeholder"
-        )
-        assert "| Won't Have | [ITEM] |" not in moscow_block, (
-            "Empty Won't Have group must not render residual [ITEM] placeholder"
-        )
+        assert (
+            "| Should Have | [ITEM] |" not in moscow_block
+        ), "Empty Should Have group must not render residual [ITEM] placeholder"
+        assert (
+            "| Won't Have | [ITEM] |" not in moscow_block
+        ), "Empty Won't Have group must not render residual [ITEM] placeholder"
         # Groups with content should still appear
         assert "| Must Have | Auth token rotation |" in moscow_block
         assert "| Could Have | Nice to have |" in moscow_block
@@ -3027,7 +3042,9 @@ class TestIssue60RendererGapFixes:
             "story",
         )
         deps = subs.get("dependencies")
-        assert deps, "Cross Issue References (no-hyphen) should be parsed as dependencies"
+        assert (
+            deps
+        ), "Cross Issue References (no-hyphen) should be parsed as dependencies"
 
     # ------------------------------------------------------------------
     # T4: _elide_template_section stops at --- HR boundary
@@ -3106,7 +3123,9 @@ class TestIssue64DepsBulletsToTable:
         result = create_issues._bullets_to_deps_table_rows(
             "- Blocks: none (operator-side workaround exists)"
         )
-        assert "| (none) | Blocks: none (operator-side workaround exists) | — |" in result
+        assert (
+            "| (none) | Blocks: none (operator-side workaround exists) | — |" in result
+        )
 
     def test_helper_idempotent_on_table_input(self):
         """Applying the helper twice gives the same result as applying it once."""
@@ -3136,9 +3155,9 @@ class TestIssue64DepsBulletsToTable:
         for sep in ["—", "–", "-"]:
             line = f"- #42 {sep} Some description (Done)"
             result = create_issues._bullets_to_deps_table_rows(line)
-            assert "| #42 | Some description | Done |" in result, (
-                f"Failed for separator: {sep!r}"
-            )
+            assert (
+                "| #42 | Some description | Done |" in result
+            ), f"Failed for separator: {sep!r}"
 
     def test_helper_star_bullet_marker(self):
         """Bullet marker ``*`` is also recognised."""
@@ -3158,7 +3177,7 @@ class TestIssue64DepsBulletsToTable:
 
         subs = create_issues._parse_subsections(
             "#### Dependencies\n\n"
-            "- #184 — Parent Epic \"Phase 1 Verification Harness\" (In Progress)\n"
+            '- #184 — Parent Epic "Phase 1 Verification Harness" (In Progress)\n'
             "- Blocks: none (operator-side workaround exists)\n"
             "- Blocked by: none\n",
             "story",
@@ -3223,9 +3242,9 @@ class TestIssue64DepsBulletsToTable:
             item = self._story_item_from_subs(subs)
             body = create_issues.generate_body(item, "story")
             deps = self._deps_section(body)
-            assert "| #99 | Some Dep | Open |" in deps, (
-                f"Separator {sep!r} not handled correctly"
-            )
+            assert (
+                "| #99 | Some Dep | Open |" in deps
+            ), f"Separator {sep!r} not handled correctly"
 
     def test_dependencies_table_source_unchanged_after_helper(self):
         """Regression: markdown-table plan source still renders correctly after
@@ -3275,7 +3294,9 @@ class TestIssue64DepsBulletsToTable:
         inside a nested list."""
         from scripts import create_issues
 
-        indented = "  - #184 — Parent Epic (In Progress)\n  - #267 — Sibling story (Open)"
+        indented = (
+            "  - #184 — Parent Epic (In Progress)\n  - #267 — Sibling story (Open)"
+        )
         result = create_issues._bullets_to_deps_table_rows(indented)
         assert "| #184 | Parent Epic | In Progress |" in result
         assert "| #267 | Sibling story | Open |" in result
