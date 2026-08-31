@@ -95,6 +95,11 @@ placeholders remain as template text (the P0-4 scanner flags them).
 - `Assumptions` → bullets
 - `Out of Scope` → bullets
 - `MoSCoW`, `MoSCoW Classification` → nested bullets (see MoSCoW format below)
+- `Dependencies` → paragraph → rendered as its own `## Dependencies` section
+  (the scope template has no placeholder slot; issue #74)
+- `Security/Compliance` (aliases `Security`, `Compliance`) → paragraph →
+  rendered as its own `## Security/Compliance` section
+- `Artifacts` → bullets → rendered as its own `## Artifacts` checkbox section
 - `I Know I Am Done When`, `Done When`, `Definition of Done` → bullets
 
 **Initiative:** `Objective`, `Release Value`, `Success Criteria`, `Feature Scope`,
@@ -102,14 +107,19 @@ placeholders remain as template text (the P0-4 scanner flags them).
 `I Know I Am Done When`.
 
 **Epic:** `Objective`, `Release Value`, `Success Criteria`, `Feature Scope`,
-`Assumptions`, `Dependencies`, `I Know I Am Done When`, `Code Areas`
-(alias `Code Areas to Examine`), `Questions for Tech Lead`,
+`Assumptions`, `Dependencies`, `Artifacts`, `I Know I Am Done When`,
+`Code Areas` (alias `Code Areas to Examine`), `Questions for Tech Lead`,
 `Security/Compliance` (aliases `Security`, `Compliance`).
 
 **Story:** `User Story`, `TL;DR` (alias `TLDR`), `Why This Matters`, `Assumptions`,
-`MoSCoW`, `Dependencies`, `I Know I Am Done When`, `Acceptance Criteria`,
-`Constraints`, `Implementation Notes`, `Security/Compliance`,
-`Subtasks Needed` (alias `Subtasks`).
+`MoSCoW`, `Dependencies`, `Artifacts`, `I Know I Am Done When`,
+`Acceptance Criteria`, `Constraints`, `Implementation Notes`,
+`Security/Compliance`, `Subtasks Needed` (alias `Subtasks`).
+
+Epic and Story `Artifacts` parse as bullets and render as a dedicated
+`### Artifacts` checkbox section before `I Know I Am Done When` (the epic and
+story templates carry no placeholder slot for them; issue #74). Previously
+these headings were silently folded into the preceding recognized subsection.
 
 **Task:** `Summary`, `Context`, `I Know I Am Done When`, `Implementation Notes`,
 `Security/Compliance`.
@@ -158,7 +168,17 @@ Both forms are parsed identically. Use the bullet-prefixed form when writing
 plans in editors that reformat indented lists — it avoids accidental un-nesting.
 
 Each `**Group**:` line starts a new bullet group. Recognized group names:
-`Must Have`, `Should Have`, `Could Have`, `Won't Have` (or `Wont Have`).
+`Must Have`, `Should Have`, `Could Have`, `Won't Have` (aliases `Wont Have`,
+`Won't Have This Time`, `Wont Have This Time`). Group-name matching is
+case-insensitive and normalizes curly apostrophes (`’`) to straight ones, so
+`Won’t Have This Time` is recognized too. All `Won't Have` variants merge into
+the rendered `Won't Have` rows.
+
+**Table form** (accepted as a fallback): when a MoSCoW subsection contains no
+recognized `**Group**:` sub-headers but does contain a markdown table, the
+table's data rows are passed through into the rendered MoSCoW table verbatim
+(header and delimiter rows stripped — the issue template supplies its own).
+Authored MoSCoW content is never elided (issue #74).
 
 ### Dependencies format (story level)
 

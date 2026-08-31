@@ -369,11 +369,14 @@ task). Each subsection heading can use any markdown depth (`##` through
 | scope | `in_scope_capabilities` | In-Scope Capabilities, In-Scope | bullets or paragraph |
 | scope | `assumptions` | Assumptions | bullets |
 | scope | `out_of_scope` | Out of Scope | bullets |
-| scope | `moscow` | MoSCoW, MoSCoW Classification | nested bullets with `**Must Have**:`, `**Should Have**:`, `**Could Have**:`, `**Won't Have**:` sub-groups |
+| scope | `moscow` | MoSCoW, MoSCoW Classification | nested bullets with `**Must Have**:`, `**Should Have**:`, `**Could Have**:`, `**Won't Have**:` sub-groups (aliases: `Wont Have`, `Won't Have This Time`; curly apostrophes normalized); markdown-table form passed through as a fallback |
+| scope | `dependencies` | Dependencies | paragraph, rendered as its own section |
+| scope | `security_compliance` | Security/Compliance, Security, Compliance | paragraph, rendered as its own section |
+| scope | `artifacts` | Artifacts | bullets, rendered as its own checkbox section |
 | scope | `done_when` | I Know I Am Done When, Done When | bullets |
 | initiative/epic | `objective`, `release_value`, `success_criteria`, `feature_scope`, `assumptions`, `dependencies`, `done_when` | as-named | mixed |
-| epic | `code_areas`, `questions_tech_lead`, `security_compliance` | as-named | mixed |
-| story | `user_story`, `tldr`, `why_this_matters`, `moscow`, `acceptance_criteria`, `constraints`, `implementation_notes`, `security_compliance`, `subtasks_needed` | as-named | mixed |
+| epic | `code_areas`, `questions_tech_lead`, `security_compliance`, `artifacts` | as-named | mixed |
+| story | `user_story`, `tldr`, `why_this_matters`, `moscow`, `acceptance_criteria`, `constraints`, `implementation_notes`, `security_compliance`, `subtasks_needed`, `artifacts` | as-named | mixed |
 | task | `summary`, `context`, `done_when`, `implementation_notes`, `security_compliance` | as-named | mixed |
 
 Subsections are OPTIONAL BY CONSTRUCTION but REQUIRED FOR SHIP by default (FR #45).
