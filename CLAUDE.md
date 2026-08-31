@@ -1,5 +1,19 @@
 # CLAUDE.md — skill-plan-to-project contributor context
 
+## Environment setup
+
+```bash
+pip install -e ".[dev]"                      # required deps (incl. mcp) + pytest/ruff
+```
+
+`mcp` is a **required** project dependency (`scripts/sbr/mcp_server.py`), not an
+optional/dev-only extra — install it via the command above, not ad hoc. If it's
+missing, `scripts/tests/test_sbr_mcp_http.py` fails/skips in ways that can look
+like a pre-existing, unrelated failure; treat a missing `mcp` import as an
+incomplete environment, not an expected non-regression. `pyproject.toml` pins
+`mcp>=1.0,<2` — `mcp` 2.x renamed `mcp.server.fastmcp.FastMCP` to
+`mcp.server.mcpserver.MCPServer` and isn't yet compatible with `mcp_server.py`.
+
 ## Build / test commands
 
 ```bash

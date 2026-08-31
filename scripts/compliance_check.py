@@ -67,12 +67,13 @@ DONE_WHEN_RE = re.compile(r"I Know I Am Done When", re.IGNORECASE)
 # The regex requires at least one uppercase letter at the start of the
 # bracket contents + at least 2 characters total, which naturally excludes
 # empty brackets + checkbox markers without requiring special cases —
-# plus an explicit single-character alternative for the templates' bare
-# issue-number token `[N]` (issue #74: `#[N]` previously escaped the gate
-# because of the 2-character minimum).  Checkbox markers stay excluded:
-# `[ ]` doesn't start with an uppercase letter, `[x]` is lowercase, and
-# `[X]` is a single character that isn't `N`.
-PLACEHOLDER_RE = re.compile(r"\[(?:[A-Z][A-Z0-9 _,/\-\[\]—\.]+|N)\]")
+# plus a `#`-anchored alternative for the templates' bare issue-number
+# token, which only ever appears as `#[N]` (issue #74: it previously
+# escaped the gate because of the 2-character minimum).  The `#` anchor
+# keeps legitimate authored content like `arr[N]` in implementation notes
+# from tripping the gate; checkbox markers (`[ ]`, `[x]`, `[X]`) remain
+# excluded as before.
+PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9 _,/\-\[\]—\.]+\]|(?<=#)\[N\]")
 
 # P0-5 (FR #40): Mermaid block validation.  A ```mermaid fenced block is
 # considered valid when its first non-blank, non-comment (`%%`) line starts

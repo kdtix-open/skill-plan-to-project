@@ -372,7 +372,7 @@ task). Each subsection heading can use any markdown depth (`##` through
 | scope | `moscow` | MoSCoW, MoSCoW Classification | nested bullets with `**Must Have**:`, `**Should Have**:`, `**Could Have**:`, `**Won't Have**:` sub-groups (aliases: `Wont Have`, `Won't Have This Time`; curly apostrophes normalized); markdown-table form passed through as a fallback |
 | scope | `dependencies` | Dependencies | paragraph, rendered as its own section |
 | scope | `security_compliance` | Security/Compliance, Security, Compliance | paragraph, rendered as its own section |
-| scope | `artifacts` | Artifacts | bullets, rendered as its own checkbox section |
+| scope | `artifacts` | Artifacts | raw text (bullets render as checkboxes, other content preserved verbatim), rendered as its own section |
 | scope | `done_when` | I Know I Am Done When, Done When | bullets |
 | initiative/epic | `objective`, `release_value`, `success_criteria`, `feature_scope`, `assumptions`, `dependencies`, `done_when` | as-named | mixed |
 | epic | `code_areas`, `questions_tech_lead`, `security_compliance`, `artifacts` | as-named | mixed |

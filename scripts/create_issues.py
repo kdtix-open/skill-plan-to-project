@@ -403,6 +403,10 @@ _MERMAID_TYPE_DIRECTIVES: tuple[str, ...] = (
 )
 
 # Subsections parsed as a flat list of bullets (vs. free-form paragraphs).
+# NOTE: `artifacts` is deliberately NOT here (issue #74): Artifacts sections
+# commonly carry tables, paragraphs, and wrapped-bullet continuation lines,
+# which a bullet parse would silently drop.  They parse as raw text and the
+# renderer checkboxifies bullet lines while preserving everything else.
 _BULLET_SUBSECTIONS = {
     "success_criteria",
     "assumptions",
@@ -410,7 +414,6 @@ _BULLET_SUBSECTIONS = {
     "done_when",
     "context",
     "constraints",
-    "artifacts",
     "questions_tech_lead",
 }
 
@@ -420,10 +423,15 @@ _BULLET_SUBSECTIONS = {
 # plans and previously left their bullets stranded under the preceding group).
 _MOSCOW_GROUP_ALIASES: dict[str, str] = {
     "must have": "must_have",
+    "must": "must_have",
     "should have": "should_have",
+    "should": "should_have",
     "could have": "could_have",
+    "could": "could_have",
     "won't have": "wont_have",
     "wont have": "wont_have",
+    "won't": "wont_have",
+    "wont": "wont_have",
     "won't have this time": "wont_have",
     "wont have this time": "wont_have",
 }
@@ -1194,12 +1202,11 @@ def _render_template(template_text: str, item: dict[str, Any], level: str) -> st
         "[PRIORITY]": priority,
         # Issue #74: the composite Priority token must be replaced BEFORE
         # its [P0/P1/P2] substring — otherwise the substring replacement
-        # fires first and leaves a dangling `P0 — [LABEL]` residue.
+        # fires first and leaves a dangling `P0 — [LABEL]` residue (the
+        # P0-4 scanner catches any residue from non-standard template
+        # variants downstream).
         "[P0/P1/P2] — [LABEL]": priority,
         "[P0/P1/P2]": priority,
-        # Safety net for template variants where only the substring matched
-        # (e.g. a non-em-dash separator) and a label residue remains.
-        " — [LABEL]": "",
         "[SIZE]": size,
         "[TIMEFRAME]": "TBD",
         "[OWNER]": "TBD",
@@ -1469,24 +1476,38 @@ def _elide_template_section(rendered: str, section_heading: str) -> str:
     return pattern.sub("", rendered)
 
 
-_DONE_WHEN_HEADING_RE = re.compile(r"^#{1,6}\s+I Know I Am Done When\s*$", re.MULTILINE)
-
-
-def _insert_sections_before_done_when(rendered: str, blocks: list[str]) -> str:
-    """Insert pre-rendered section blocks before the Done When heading.
+def _insert_sections_before_done_when(
+    rendered: str, blocks: list[str], heading_hashes: str
+) -> str:
+    """Insert pre-rendered section blocks before the template's Done When
+    heading.
 
     Issue #74: used for plan-authored sections the template carries no
     placeholder slot for (Scope Dependencies / Security/Compliance /
     Artifacts, Epic + Story Artifacts).  Each block must carry its own
-    trailing separator + blank line.  Falls back to appending at the end
-    of the body when no Done When heading is present.
+    trailing separator + blank line.
+
+    `heading_hashes` is the template's exact Done When heading level for
+    the item's level (`##` for scope, `###` for epic/story) — matching
+    that exact level, and anchoring on the LAST occurrence, keeps the
+    insertion out of narrative fallback blobs: when a plan omits its
+    primary narrative subsection, `_render_template` substitutes the raw
+    description (which can carry the plan's own `#### I Know I Am Done
+    When` heading) into the Vision/Objective/TL;DR slot near the top of
+    the body.  Falls back to appending at the end of the body when no
+    matching heading is present.
     """
     if not blocks:
         return rendered
     insertion = "".join(blocks)
-    m = _DONE_WHEN_HEADING_RE.search(rendered)
-    if m:
-        return rendered[: m.start()] + insertion + rendered[m.start() :]
+    heading_re = re.compile(
+        r"^" + re.escape(heading_hashes) + r"\s+I Know I Am Done When\s*$",
+        re.MULTILINE,
+    )
+    matches = list(heading_re.finditer(rendered))
+    if matches:
+        pos = matches[-1].start()
+        return rendered[:pos] + insertion + rendered[pos:]
     return rendered.rstrip("\n") + "\n\n" + insertion.rstrip("\n") + "\n"
 
 
@@ -1505,6 +1526,82 @@ def _extra_section_block(heading: str, content: Any, separator: bool) -> str:
     block = f"{heading}\n\n{body}\n\n"
     if separator:
         block += "---\n\n"
+    return block
+
+
+def _checkboxify_bullets(text: str) -> str:
+    """Convert plain bullet lines to unchecked checkboxes, preserving every
+    other line (paragraphs, tables, wrapped-bullet continuations) verbatim.
+
+    Issue #74: Artifacts subsections parse as raw text so non-bullet
+    authored content survives; bullet lines still render in the checkbox
+    style the Initiative template establishes.  Lines that already carry a
+    checkbox marker are left untouched.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        m = re.match(r"^(\s*)[-*]\s+(?!\[[ xX]\]\s)(.*)$", line)
+        if m:
+            out.append(f"{m.group(1)}- [ ] {m.group(2)}")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _artifacts_block(art: Any) -> str | None:
+    """Format an Artifacts subsection value for rendering, or None if empty.
+
+    Accepts the parser's raw-text form (checkboxifying bullet lines while
+    keeping tables / paragraphs / continuation lines verbatim) and the
+    legacy list form (rendered as a checkbox list).
+    """
+    if isinstance(art, list) and art:
+        return _bullet_lines(art, checkbox=True)
+    if isinstance(art, str) and art.strip():
+        return _checkboxify_bullets(art.strip())
+    return None
+
+
+_MOSCOW_TABLE_HEADER = "| Priority | Item |\n|----------|------|"
+
+# The template's full MoSCoW sample table (header + delimiter + the four
+# sample rows) — the unit both fill branches replace, so raw content with
+# prose can render ABOVE a rebuilt table instead of inside it (issue #74).
+_MOSCOW_TEMPLATE_TABLE = (
+    "| Priority | Item |\n"
+    "|----------|------|\n"
+    "| Must Have | [ITEM] |\n"
+    "| Should Have | [ITEM] |\n"
+    "| Could Have | [ITEM] |\n"
+    "| Won't Have | [ITEM] |"
+)
+
+
+def _moscow_str_fallback_block(raw: str) -> str:
+    """Render raw (non-bullet-group) MoSCoW content in place of the
+    template's full MoSCoW sample table.
+
+    Table-form content: any prose above the authored table is kept above a
+    rebuilt canonical table whose data rows are the authored rows (the
+    authored header + delimiter are dropped — the canonical header is
+    supplied here).  Content with no table at all is passed through
+    verbatim under the section heading — preservation-first (issue #74) —
+    rather than being wedged inside a table structure.
+    """
+    lines = raw.splitlines()
+    delim_re = re.compile(r"^\|[\s\-:|]+\|?$")
+    start = None
+    for i in range(len(lines) - 1):
+        if lines[i].strip().startswith("|") and delim_re.match(lines[i + 1].strip()):
+            start = i
+            break
+    if start is None:
+        return raw.strip()
+    prose = "\n".join(lines[:start]).strip()
+    rows = "\n".join(lines[start + 2 :]).strip()
+    block = _MOSCOW_TABLE_HEADER + ("\n" + rows if rows else "")
+    if prose:
+        block = prose + "\n\n" + block
     return block
 
 
@@ -1675,20 +1772,18 @@ def _fill_scope_subsections(rendered: str, subs: dict[str, Any]) -> str:
 
     # MoSCoW
     moscow = subs.get("moscow")
-    old_rows = (
-        "| Must Have | [ITEM] |\n"
-        "| Should Have | [ITEM] |\n"
-        "| Could Have | [ITEM] |\n"
-        "| Won't Have | [ITEM] |"
-    )
     if isinstance(moscow, dict) and moscow:
-        rendered = _replace_block(rendered, old_rows, _moscow_table_rows(moscow))
-    elif isinstance(moscow, str) and moscow.strip():
-        # Issue #74: MoSCoW authored as a markdown table — pass the data
-        # rows through (header + delimiter stripped; the template already
-        # carries its own).
         rendered = _replace_block(
-            rendered, old_rows, _normalize_table_subsection_content(moscow)
+            rendered,
+            _MOSCOW_TEMPLATE_TABLE,
+            _MOSCOW_TABLE_HEADER + "\n" + _moscow_table_rows(moscow),
+        )
+    elif isinstance(moscow, str) and moscow.strip():
+        # Issue #74: MoSCoW with no recognized `**Group**:` sub-headers —
+        # rebuild the table from authored rows (any prose kept above it),
+        # or pass non-table content through verbatim.
+        rendered = _replace_block(
+            rendered, _MOSCOW_TEMPLATE_TABLE, _moscow_str_fallback_block(moscow)
         )
 
     # Done When (project-specific criterion)
@@ -1710,10 +1805,10 @@ def _fill_scope_subsections(rendered: str, subs: dict[str, Any]) -> str:
     sc = subs.get("security_compliance")
     if isinstance(sc, str) and sc.strip():
         extra_blocks.append(_extra_section_block("## Security/Compliance", sc, True))
-    art = subs.get("artifacts") or []
-    if art:
-        extra_blocks.append(_extra_section_block("## Artifacts", art, True))
-    rendered = _insert_sections_before_done_when(rendered, extra_blocks)
+    art_block = _artifacts_block(subs.get("artifacts"))
+    if art_block is not None:
+        extra_blocks.append(_extra_section_block("## Artifacts", art_block, True))
+    rendered = _insert_sections_before_done_when(rendered, extra_blocks, "##")
 
     return rendered
 
@@ -1790,13 +1885,15 @@ def _fill_initiative_subsections(rendered: str, subs: dict[str, Any]) -> str:
             _bullet_lines(oos),
         )
 
-    # Artifacts
-    art = subs.get("artifacts") or []
-    if art:
+    # Artifacts — raw-text parse (issue #74): bullet lines render as
+    # checkboxes, non-bullet content (tables, paragraphs, continuation
+    # lines) is preserved verbatim.
+    art_block = _artifacts_block(subs.get("artifacts"))
+    if art_block is not None:
         rendered = _replace_block(
             rendered,
             "- [ ] [ARTIFACT]",
-            _bullet_lines(art, checkbox=True),
+            art_block,
         )
 
     # Done When
@@ -1914,10 +2011,10 @@ def _fill_epic_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # Issue #74: plan-authored Artifacts — the epic template has no slot,
     # so render a dedicated section before Done When (mirroring the
     # Initiative template's ordering) instead of folding into another field.
-    art = subs.get("artifacts") or []
-    if art:
+    art_block = _artifacts_block(subs.get("artifacts"))
+    if art_block is not None:
         rendered = _insert_sections_before_done_when(
-            rendered, [_extra_section_block("### Artifacts", art, True)]
+            rendered, [_extra_section_block("### Artifacts", art_block, True)], "###"
         )
 
     return rendered
@@ -1951,20 +2048,19 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # MoSCoW — fill when present, elide when absent (consistent with
     # Dependencies and Constraints; avoids leaking [ITEM] placeholders).
     moscow = subs.get("moscow")
-    old_rows = (
-        "| Must Have | [ITEM] |\n"
-        "| Should Have | [ITEM] |\n"
-        "| Could Have | [ITEM] |\n"
-        "| Won't Have | [ITEM] |"
-    )
     if isinstance(moscow, dict) and moscow:
-        rendered = _replace_block(rendered, old_rows, _moscow_table_rows(moscow))
-    elif isinstance(moscow, str) and moscow.strip():
-        # Issue #74: MoSCoW authored as a markdown table — pass the data
-        # rows through (header + delimiter stripped; the template already
-        # carries its own) instead of eliding authored content.
         rendered = _replace_block(
-            rendered, old_rows, _normalize_table_subsection_content(moscow)
+            rendered,
+            _MOSCOW_TEMPLATE_TABLE,
+            _MOSCOW_TABLE_HEADER + "\n" + _moscow_table_rows(moscow),
+        )
+    elif isinstance(moscow, str) and moscow.strip():
+        # Issue #74: MoSCoW with no recognized `**Group**:` sub-headers —
+        # rebuild the table from authored rows (any prose kept above it),
+        # or pass non-table content through verbatim, instead of eliding
+        # authored content.
+        rendered = _replace_block(
+            rendered, _MOSCOW_TEMPLATE_TABLE, _moscow_str_fallback_block(moscow)
         )
     else:
         # No MoSCoW content in plan source → drop the whole section so
@@ -2071,10 +2167,10 @@ def _fill_story_subsections(rendered: str, subs: dict[str, Any]) -> str:
     # so render a dedicated section before Done When instead of folding
     # into another field.  (No `---` separator: the story template's
     # PRODUCT SECTION doesn't use them between sections.)
-    art = subs.get("artifacts") or []
-    if art:
+    art_block = _artifacts_block(subs.get("artifacts"))
+    if art_block is not None:
         rendered = _insert_sections_before_done_when(
-            rendered, [_extra_section_block("### Artifacts", art, False)]
+            rendered, [_extra_section_block("### Artifacts", art_block, False)], "###"
         )
 
     return rendered

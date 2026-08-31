@@ -10,7 +10,10 @@ requires-python = ">=3.9"
 dependencies = [
     "PyJWT>=2.8",
     "cryptography>=42",
-    "mcp>=1.0",
+    # mcp 2.x renamed mcp.server.fastmcp.FastMCP to mcp.server.mcpserver.MCPServer
+    # and changed other APIs scripts/sbr/mcp_server.py depends on (v1 FastMCP).
+    # Pin below 2 until that module is migrated.
+    "mcp>=1.0,<2",
 ]
 
 [project.scripts]

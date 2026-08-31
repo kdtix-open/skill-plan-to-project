@@ -31,6 +31,8 @@ from scripts.compliance_check import (
     check_issue,
 )
 from scripts.create_issues import (
+    _insert_sections_before_done_when,
+    _moscow_str_fallback_block,
     _parse_subsections,
     generate_body,
     parse_plan,
@@ -230,7 +232,10 @@ class TestScopeSubsectionAliases:
         subs = _parse_subsections(SCOPE_WITH_EXTRAS, "scope")
         assert subs.get("dependencies"), "Dependencies must parse explicitly"
         assert subs.get("security_compliance"), "Security/Compliance must parse"
-        assert subs.get("artifacts") == ["Updated operator runbook"]
+        # Artifacts parses as raw text (issue #74: non-bullet content — tables,
+        # paragraphs, wrapped continuations — must survive; the renderer
+        # checkboxifies bullet lines at render time, not parse time).
+        assert subs.get("artifacts") == "- Updated operator runbook"
         # Nothing folded into MoSCoW (the previously-preceding recognized key)
         assert "Platform team sign-off" not in str(subs.get("moscow", ""))
         assert "Artifacts" not in str(subs.get("moscow", ""))
@@ -320,6 +325,170 @@ class TestMoscowGroupAliases:
         assert "[ITEM]" not in body
 
 
+class TestMoscowStrFallbackShapes:
+    """A confirmed review finding: the raw-text MoSCoW fallback must not
+    wedge non-table content (prose, flat bullets with no group headers)
+    underneath the template's table header — that produces a malformed
+    GFM table with no bracketed placeholder for the P0-4 gate to catch."""
+
+    def test_prose_only_passes_through_verbatim_no_dangling_header(self) -> None:
+        block = _moscow_str_fallback_block(
+            "Everything here is must-have; nothing deferred."
+        )
+        assert block == "Everything here is must-have; nothing deferred."
+        assert "| Priority | Item |" not in block
+
+    def test_flat_bullets_no_group_headers_pass_through_verbatim(self) -> None:
+        block = _moscow_str_fallback_block("- Core parsing\n- Fast rendering")
+        assert block == "- Core parsing\n- Fast rendering"
+        assert "| Priority | Item |" not in block
+
+    def test_table_preceded_by_prose_keeps_prose_above_rebuilt_table(self) -> None:
+        raw = (
+            "Classification per governance charter:\n\n"
+            "| Priority | Item |\n"
+            "|---|---|\n"
+            "| Must | Corpus preservation |\n"
+        )
+        block = _moscow_str_fallback_block(raw)
+        assert block.startswith("Classification per governance charter:")
+        # The authored header + delimiter are not duplicated as data rows.
+        assert block.count("| Priority | Item |") == 1
+        assert block.count("|---|---|") == 0
+        assert "| Must | Corpus preservation |" in block
+
+    def test_table_preceded_by_prose_renders_without_garbled_rows(self) -> None:
+        item = {
+            "title": "Ratify Guide Publication",
+            "description": textwrap.dedent(
+                """\
+                #### TL;DR
+
+                One-liner.
+
+                #### MoSCoW
+
+                Classification per governance charter:
+
+                | Priority | Item |
+                |---|---|
+                | Must | Corpus preservation |
+                """
+            ),
+            "priority": "P1",
+            "size": "M",
+            "blocking": [],
+        }
+        body = generate_body(item, "story", {})
+        assert "Classification per governance charter:" in body
+        assert "Corpus preservation" in body
+        # No duplicated header/delimiter rows from the authored table.
+        assert body.count("| Priority | Item |") == 1
+        assert "|---|---|" not in body
+
+
+class TestInsertSectionsBeforeDoneWhenAnchoring:
+    """A confirmed MAJOR review finding: anchoring on the FIRST 1-6-hash
+    'I Know I Am Done When' match could land inside the narrative
+    fallback blob (the raw description gets substituted whole into the
+    Vision/Objective/TL;DR slot when the plan has no primary narrative
+    subsection and no leading text — and that raw text can carry the
+    plan's own `#### I Know I Am Done When` heading).  The fix anchors on
+    the LAST match of the template's own heading level."""
+
+    def test_scope_with_no_vision_or_leading_text_does_not_splice_narrative(
+        self,
+    ) -> None:
+        # No `#### Vision` and no leading prose — `_render_template`'s
+        # PRE-EXISTING (not introduced by issue #74) narrative fallback
+        # substitutes the entire raw description into the Vision slot in
+        # this shape, including the plan's own Done-When heading text —
+        # see the follow-up task filed for that separate bug. What THIS
+        # fix owns: the newly-inserted Dependencies/Artifacts/Security
+        # sections must not land inside that blob, must not fragment on
+        # the wrong (`####`) heading level, and must appear exactly once
+        # as their own proper sections — not further duplicated by the
+        # insertion logic itself.
+        description = textwrap.dedent(
+            """\
+            #### Business Problem
+
+            Existing process doesn't scale.
+
+            #### Success Criteria
+
+            - Ships on time
+
+            #### Assumptions
+
+            - Team is available
+
+            #### Out of Scope
+
+            - Legacy migration
+
+            #### Dependencies
+
+            - Platform team sign-off
+
+            #### I Know I Am Done When
+
+            - All initiatives closed
+            """
+        )
+        item = {
+            "title": "Test Project",
+            "description": description,
+            "priority": "P0",
+            "size": "M",
+            "blocking": [],
+        }
+        body = generate_body(item, "scope", {})
+        # The template's own (`## `) Done When heading appears exactly
+        # once; the pre-existing bug duplicates the PLAN's `#### ` one
+        # inside the Vision blob, which is a distinct heading level —
+        # anchored at line start so "## " isn't matched as a substring of
+        # "#### " (both contain the two-hash sequence).
+        assert len(re.findall(r"(?m)^## I Know I Am Done When", body)) == 1
+        # The inserted Dependencies section must not land inside the Vision
+        # narrative block (i.e. it must appear AFTER the Vision heading's
+        # own content, not spliced into raw description text above it),
+        # and must precede the template's real Done When section.  Line-
+        # anchored (as above): the Vision blob also contains a raw
+        # "#### Dependencies" heading, whose "## Dependencies" substring
+        # would otherwise be matched at the wrong (`####`) heading level.
+        vision_idx = body.index("## Vision")
+        deps_matches = [m.start() for m in re.finditer(r"(?m)^## Dependencies", body)]
+        done_idx = re.search(r"(?m)^## I Know I Am Done When", body).start()
+        # The inserted "## Dependencies" section appears exactly once (the
+        # pre-existing Vision-blob bug separately echoes the plan's raw
+        # "#### Dependencies" text at a different heading level, which is
+        # out of scope here).
+        assert len(deps_matches) == 1
+        assert vision_idx < deps_matches[0] < done_idx
+
+    def test_no_done_when_heading_appends_at_end(self) -> None:
+        rendered = "# Title\n\nSome body.\n"
+        out = _insert_sections_before_done_when(
+            rendered, ["## Extra\n\ncontent\n\n"], "##"
+        )
+        assert out.startswith(rendered.rstrip("\n"))
+        assert out.rstrip("\n").endswith("## Extra\n\ncontent")
+
+    def test_multiple_done_when_headings_anchors_on_last(self) -> None:
+        rendered = (
+            "#### I Know I Am Done When\n"
+            "- raw plan criterion\n\n"
+            "## I Know I Am Done When\n"
+            "- [ ] TDD\n"
+        )
+        out = _insert_sections_before_done_when(rendered, ["## Extra\n\n"], "##")
+        # Inserted content lands before the LAST (## ) match, not the
+        # first (#### ) match.
+        assert out.index("## Extra") > out.index("#### I Know I Am Done When")
+        assert out.index("## Extra") < out.rindex("## I Know I Am Done When")
+
+
 # ---------------------------------------------------------------------------
 # Root cause 4c: Epic + Story Artifacts parse and render
 # ---------------------------------------------------------------------------
@@ -345,11 +514,13 @@ EPIC_WITH_ARTIFACTS = textwrap.dedent(
 
 class TestEpicStoryArtifacts:
     def test_epic_artifacts_parse_not_folded(self) -> None:
+        # Artifacts parses as raw text (issue #74): a bullet-parse would
+        # silently drop any non-bullet content (tables, paragraphs, wrapped
+        # continuation lines) that commonly appears in Artifacts sections.
         subs = _parse_subsections(EPIC_WITH_ARTIFACTS, "epic")
-        assert subs.get("artifacts") == [
-            "`docs/personas/README.md`",
-            "Updated SHA-256 manifest",
-        ]
+        assert subs.get("artifacts") == (
+            "- `docs/personas/README.md`\n- Updated SHA-256 manifest"
+        )
         assert "Artifacts" not in str(subs.get("security_compliance", ""))
 
     def test_epic_artifacts_render_as_section(self) -> None:
@@ -384,10 +555,77 @@ class TestEpicStoryArtifacts:
             "blocking": [],
         }
         subs = _parse_subsections(item["description"], "story")
-        assert subs.get("artifacts") == ["Validation report"]
+        assert subs.get("artifacts") == "- Validation report"
         body = generate_body(item, "story", {})
         assert "### Artifacts" in body
         assert "- [ ] Validation report" in body
+
+    def test_epic_artifacts_preserves_table_and_paragraph(self) -> None:
+        """Regression guard for the confirmed data-loss finding: an
+        Artifacts section mixing a bullet, a paragraph, and a table must
+        keep ALL of that content — not just the bullet — in the rendered
+        body.  Before this test the bullet-parse path silently dropped
+        everything except recognized bullet lines."""
+        description = textwrap.dedent(
+            """\
+            #### Objective
+
+            Why this epic exists.
+
+            #### Artifacts
+
+            - `docs/personas/README.md`
+
+            Shared evidence-state semantics:
+
+            | State | Required proof |
+            |---|---|
+            | Ratified | Governance sign-off |
+            | Built | Passing test suite |
+            """
+        )
+        subs = _parse_subsections(description, "epic")
+        artifacts = subs.get("artifacts")
+        assert isinstance(artifacts, str)
+        assert "Shared evidence-state semantics:" in artifacts
+        assert "| Ratified | Governance sign-off |" in artifacts
+
+        item = {
+            "title": "Evidence Epic",
+            "description": description,
+            "priority": "P0",
+            "size": "M",
+            "blocking": [],
+        }
+        body = generate_body(item, "epic", {})
+        assert "- [ ] `docs/personas/README.md`" in body
+        assert "Shared evidence-state semantics:" in body
+        assert "| Ratified | Governance sign-off |" in body
+
+    def test_story_artifacts_preserves_wrapped_continuation_line(self) -> None:
+        """A bullet whose sentence wraps onto a continuation line (no `-`
+        marker) must keep that continuation, not truncate mid-sentence."""
+        description = textwrap.dedent(
+            """\
+            #### TL;DR
+
+            One-liner.
+
+            #### Artifacts
+
+            - Persona/runtime authority matrix with current, target, gap, and
+              confidence fields.
+            """
+        )
+        item = {
+            "title": "Baseline Persona Authority",
+            "description": description,
+            "priority": "P1",
+            "size": "M",
+            "blocking": [],
+        }
+        body = generate_body(item, "story", {})
+        assert "confidence fields." in body
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +653,13 @@ def persona_rendered() -> list[tuple[str, dict, str]]:
 
 class TestPersonaGovernancePlanEndToEnd:
     def test_expected_item_count(self, persona_rendered) -> None:
-        assert len(persona_rendered) == 50
+        assert len(persona_rendered) == 50, (
+            "fixture item count drifted from the frozen PR #2002 snapshot "
+            "(see the provenance comment at the top of the fixture file) — "
+            "if the fixture was deliberately regenerated, update this and "
+            "the other hard-coded counts in this test class (37 Artifacts "
+            "headings, 10 table-form story MoSCoW sections)"
+        )
 
     def test_zero_placeholders_in_all_bodies(self, persona_rendered) -> None:
         offenders: list[str] = []
@@ -462,13 +706,24 @@ class TestPersonaGovernancePlanEndToEnd:
         assert not folded, f"Artifacts folded into security_compliance: {folded}"
 
     def test_artifacts_render_in_bodies(self, persona_rendered) -> None:
-        """Every parsed artifact list must surface in the rendered body."""
+        """Every non-blank line of the raw Artifacts text must survive
+        rendering — including non-bullet content (tables, paragraphs,
+        wrapped continuation lines) that a bullet-only parse would drop.
+        Artifacts parses as raw text (issue #74), so this walks lines
+        rather than parsed list entries; bullet lines render as
+        checkboxes, so the comparison strips the bullet marker."""
         missing: list[str] = []
         for level, item, body in persona_rendered:
-            artifacts = item["subsections"].get("artifacts") or []
-            for entry in artifacts:
-                if entry not in body:
-                    missing.append(f"{level} {item['title'][:40]}: {entry[:60]}")
+            artifacts = item["subsections"].get("artifacts")
+            if not isinstance(artifacts, str) or not artifacts.strip():
+                continue
+            for line in artifacts.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                content = re.sub(r"^[-*]\s+", "", stripped)
+                if content not in body:
+                    missing.append(f"{level} {item['title'][:40]}: {content[:60]}")
         assert not missing, "\n".join(missing)
 
     def test_story_moscow_tables_preserved(self, persona_rendered) -> None:
@@ -502,8 +757,11 @@ class TestPersonaGovernancePlanEndToEnd:
 
     def test_recognized_bullet_subsections_preserved(self, persona_rendered) -> None:
         """Spot-preservation sweep: the first entry of every parsed bullet
-        subsection must appear in the rendered body."""
-        checked_keys = ("success_criteria", "done_when", "artifacts", "out_of_scope")
+        subsection must appear in the rendered body.  (`artifacts` is
+        checked separately in test_artifacts_render_in_bodies — it parses
+        as raw text, not a bullet list, so it doesn't belong in this
+        list-shaped sweep.)"""
+        checked_keys = ("success_criteria", "done_when", "out_of_scope")
         missing: list[str] = []
         for level, item, body in persona_rendered:
             for key in checked_keys:

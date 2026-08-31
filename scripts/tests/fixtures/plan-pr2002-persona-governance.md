@@ -38,6 +38,23 @@ cross_references:
   - skill-plan-to-project#74
 ---
 
+<!--
+FIXTURE PROVENANCE (do not regenerate without updating the counts this
+test file hard-codes): frozen snapshot of
+docs/plans/drafts/Agentic Orchestration Persona Governance, Commissioning,
+and Backlog Alignment Plan.md from kdtix-open/agent-project-queue, taken
+at merge commit 1ca4a86ceb (PR #2002, merged 2026-07-29). 6,259 lines,
+SHA-256 aed5ff027619be215eca24b81de2e9e95101da3b04bedfce96aaa8ec016c07f2.
+
+This diverges slightly from the 6,251-line / SHA-256 e1c1f80ee16f...
+snapshot cited in the skill-plan-to-project#74 audit — that exact working-
+copy state was not reachable from the source repo's commit history at the
+time this fixture was captured. This PR #2002 merge commit is the closest
+durable snapshot and reproduces every audit count (8 items leaking 32
+placeholders, 9 bodies leaking #[N], 37 authored Artifacts headings with
+1 parsed / 36 folded into security_compliance) exactly.
+-->
+
 # Agentic Orchestration Persona Governance, Commissioning, and Backlog Alignment
 
 > **Status: DRAFT — OPERATOR GOVERN DECISION REQUIRED.**

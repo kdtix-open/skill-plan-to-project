@@ -57,6 +57,9 @@ _SUBSECTION_ORDER_BY_LEVEL: dict[str, list[str]] = {
         "assumptions",
         "out_of_scope",
         "moscow",
+        "dependencies",
+        "security_compliance",
+        "artifacts",
         "done_when",
     ],
     "initiative": [
@@ -77,6 +80,7 @@ _SUBSECTION_ORDER_BY_LEVEL: dict[str, list[str]] = {
         "feature_scope",
         "assumptions",
         "dependencies",
+        "artifacts",
         "done_when",
         "code_areas",
         "questions_tech_lead",
@@ -94,6 +98,7 @@ _SUBSECTION_ORDER_BY_LEVEL: dict[str, list[str]] = {
         "constraints",
         "implementation_notes",
         "security_compliance",
+        "artifacts",
         "subtasks_needed",
     ],
     "task": [
